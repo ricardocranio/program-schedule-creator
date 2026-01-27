@@ -157,6 +157,7 @@ export default function Index() {
                 slots={currentSlots}
                 day={selectedDay}
                 musicLibrary={musicLibrary}
+                radioStations={radioStations}
                 onSlotClick={handleEditSlot}
               />
             </div>
