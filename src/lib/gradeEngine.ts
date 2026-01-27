@@ -1,7 +1,7 @@
 /**
  * Grade Assembly Engine - Baseado na lógica do PGM-FM (FINAL_1.py)
  * Implementa:
- * - Sequência de rádios: 1-5 BH, 6-9 Band, 10 Disney/Metro
+ * - Sequência de rádios configurável
  * - Controle de repetição de artista (60min)
  * - Conteúdo fixo por horário
  * - Ranking de sucessos
@@ -11,22 +11,25 @@
 import { DayOfWeek, TimeSlot, SlotContent, RadioStation, DAY_SUFFIX } from '@/types/radio';
 import { normalizeForMatch, findBestMatch } from './fuzzyMatch';
 
+export interface SequenceSlot {
+  positions: string; // "1-5", "6-9", "10"
+  radioId: string;
+  radioName: string;
+}
+
 // Configuração padrão
 export const GRADE_CONFIG = {
-  // Mapeamento de posições para rádios
-  radioSequence: {
-    1: 'bh', 2: 'bh', 3: 'bh', 4: 'bh', 5: 'bh',
-    6: 'band', 7: 'band', 8: 'band', 9: 'band',
-    10: 'random_pop' // Disney ou Metro
-  } as Record<number, string>,
-  
   // Estilos por rádio
   radioStyles: {
     bh: ['SERTANEJO', 'PAGODE', 'AGRONEJO'],
+    bh_fm: ['SERTANEJO', 'PAGODE', 'AGRONEJO'],
     band: ['SERTANEJO', 'PAGODE', 'AGRONEJO'],
+    band_fm: ['SERTANEJO', 'PAGODE', 'AGRONEJO'],
     clube: ['SERTANEJO', 'PAGODE', 'POP/VARIADO'],
+    clube_fm: ['SERTANEJO', 'PAGODE', 'POP/VARIADO'],
     disney: ['POP/VARIADO', 'TEEN/HITS', 'DANCE'],
-    metro: ['POP/VARIADO', 'DANCE', 'HITS']
+    metro: ['POP/VARIADO', 'DANCE', 'HITS'],
+    random_pop: ['POP/VARIADO', 'TEEN/HITS', 'DANCE'],
   } as Record<string, string[]>,
   
   // IDs de programa por horário
@@ -117,9 +120,49 @@ export class GradeAssemblyEngine {
   private usedInPreviousBlocks: Set<string> = new Set();
   private musicInventory: Map<string, MusicInfo> = new Map();
   private radioHistory: Map<string, string[]> = new Map();
+  private customSequence: SequenceSlot[] = [];
   
   constructor() {
     this.loadRanking();
+    this.loadSequence();
+  }
+  
+  // Carregar sequência do localStorage
+  private loadSequence() {
+    try {
+      const saved = localStorage.getItem('radiograde_sequence_config');
+      if (saved) this.customSequence = JSON.parse(saved);
+    } catch (e) {
+      console.error('Erro ao carregar sequência:', e);
+    }
+  }
+  
+  // Atualizar sequência
+  setSequence(sequence: SequenceSlot[]) {
+    this.customSequence = sequence;
+  }
+  
+  // Obter rádio para uma posição baseado na sequência configurada
+  private getRadioForPosition(position: number): string {
+    if (this.customSequence.length === 0) {
+      // Fallback para sequência padrão
+      if (position <= 5) return 'bh_fm';
+      if (position <= 9) return 'band_fm';
+      return 'random_pop';
+    }
+    
+    for (const slot of this.customSequence) {
+      const [start, end] = slot.positions.includes('-') 
+        ? slot.positions.split('-').map(Number) 
+        : [parseInt(slot.positions), parseInt(slot.positions)];
+      
+      if (position >= start && position <= end) {
+        return slot.radioId;
+      }
+    }
+    
+    // Default se não encontrar
+    return 'bh_fm';
   }
   
   // Carregar ranking do localStorage
@@ -311,8 +354,8 @@ export class GradeAssemblyEngine {
     
     // 4. Montar sequência de músicas
     for (let pos = 1; pos <= numSongs; pos++) {
-      // Determinar rádio alvo
-      let targetRadio = this.config.radioSequence[pos] || 'bh';
+      // Determinar rádio alvo usando sequência configurada
+      let targetRadio = this.getRadioForPosition(pos);
       
       // Posição 10: sortear entre Disney e Metro
       if (targetRadio === 'random_pop') {

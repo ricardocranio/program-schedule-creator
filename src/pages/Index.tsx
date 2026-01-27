@@ -4,8 +4,10 @@ import { useSchedule } from '@/hooks/useSchedule';
 import { Header } from '@/components/Header';
 import { DayTabs } from '@/components/DayTabs';
 import { ScheduleGrid } from '@/components/ScheduleGrid';
+import { SchedulePreview } from '@/components/SchedulePreview';
 import { TimelineView } from '@/components/TimelineView';
 import { SequenceBuilder } from '@/components/SequenceBuilder';
+import { SequenceConfig } from '@/components/SequenceConfig';
 import { RadioStationManager } from '@/components/RadioStationManager';
 import { MusicLibraryManager } from '@/components/MusicLibraryManager';
 import { MusicDownloader } from '@/components/MusicDownloader';
@@ -16,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Calendar, Layers, Radio as RadioIcon, Settings, Database, LayoutGrid, Clock, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
+import { gradeEngine, SequenceSlot } from '@/lib/gradeEngine';
 
 export default function Index() {
   const {
@@ -130,20 +133,32 @@ export default function Index() {
 
           {/* Tab Grade */}
           <TabsContent value="grade" className="mt-0">
-            <div className="space-y-4">
-              <DayTabs
-                selectedDay={selectedDay}
-                onSelectDay={setSelectedDay}
-                hasSlotsForDay={hasSlotsForDay}
-              />
-              <ScheduleGrid
-                slots={currentSlots}
-                day={selectedDay}
-                musicLibrary={musicLibrary}
-                onEditSlot={handleEditSlot}
-                onAddContent={handleEditSlot}
-                onGenerateEmpty={() => generateEmptySchedule(selectedDay)}
-              />
+            <div className="grid lg:grid-cols-3 gap-4">
+              {/* Coluna principal - Grade */}
+              <div className="lg:col-span-2 space-y-4">
+                <DayTabs
+                  selectedDay={selectedDay}
+                  onSelectDay={setSelectedDay}
+                  hasSlotsForDay={hasSlotsForDay}
+                />
+                <ScheduleGrid
+                  slots={currentSlots}
+                  day={selectedDay}
+                  musicLibrary={musicLibrary}
+                  onEditSlot={handleEditSlot}
+                  onAddContent={handleEditSlot}
+                  onGenerateEmpty={() => generateEmptySchedule(selectedDay)}
+                />
+              </div>
+              
+              {/* Coluna lateral - Preview */}
+              <div className="space-y-4">
+                <SchedulePreview
+                  slots={currentSlots}
+                  day={selectedDay}
+                  musicLibrary={musicLibrary}
+                />
+              </div>
             </div>
           </TabsContent>
 
@@ -167,7 +182,11 @@ export default function Index() {
 
           {/* Tab Montagem */}
           <TabsContent value="montagem" className="mt-0">
-            <div className="grid lg:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="grid lg:grid-cols-2 xl:grid-cols-5 gap-4">
+              <SequenceConfig
+                radioStations={radioStations}
+                onSequenceChange={(seq) => gradeEngine.setSequence(seq)}
+              />
               <SequenceBuilder
                 radioStations={radioStations.filter(s => s.enabled)}
                 musicLibrary={musicLibrary}
