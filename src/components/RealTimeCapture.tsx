@@ -23,7 +23,11 @@ import {
   TrendingUp,
   BarChart3,
   Play,
-  Pause
+  Pause,
+  Search,
+  FileDown,
+  Loader2,
+  ExternalLink
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -36,6 +40,12 @@ import {
 } from '@/lib/radioHistoricoParser';
 import { findBestMatch } from '@/lib/fuzzyMatch';
 import { RadioStation } from '@/types/radio';
+import { 
+  searchByArtistTitle, 
+  downloadDeemixBatch, 
+  openDeemixDownload,
+  DeezerTrack 
+} from '@/lib/deezerApi';
 
 interface CapturedTrack {
   id: string;
@@ -46,6 +56,9 @@ interface CapturedTrack {
   matchedFile: string | null;
   matchScore: number;
   isNew: boolean;
+  deezerResults?: DeezerTrack[];
+  isSearching?: boolean;
+  downloadStatus?: 'pending' | 'searching' | 'found' | 'not_found' | 'queued';
 }
 
 interface RealTimeCaptureProps {
@@ -382,6 +395,133 @@ export function RealTimeCapture({
 
   const matchRate = stats.total > 0 ? Math.round((stats.matched / stats.total) * 100) : 0;
 
+  // Search track on Deezer and download
+  const handleSearchAndDownload = async (track: CapturedTrack) => {
+    // Update track status to searching
+    setCapturedTracks(prev => prev.map(t => 
+      t.id === track.id 
+        ? { ...t, isSearching: true, downloadStatus: 'searching' } 
+        : t
+    ));
+
+    try {
+      const results = await searchByArtistTitle(track.artist, track.title);
+      
+      if (results.length > 0) {
+        // Found results, update track and auto-queue first result
+        setCapturedTracks(prev => prev.map(t => 
+          t.id === track.id 
+            ? { ...t, deezerResults: results, isSearching: false, downloadStatus: 'found' } 
+            : t
+        ));
+
+        // Auto-open Deemix with first result
+        const firstResult = results[0];
+        openDeemixDownload(firstResult.id);
+        
+        // Update notification status in database
+        await supabase
+          .from('notificacoes_musicas')
+          .update({ 
+            status: 'download_iniciado',
+            tentativas_download: 1
+          })
+          .eq('artista', track.artist)
+          .eq('titulo', track.title);
+
+        toast.success(`🎵 Encontrado no Deezer!`, {
+          description: `${firstResult.artist} - ${firstResult.title}`,
+          action: {
+            label: 'Abrir Deemix',
+            onClick: () => openDeemixDownload(firstResult.id)
+          }
+        });
+      } else {
+        // No results found
+        setCapturedTracks(prev => prev.map(t => 
+          t.id === track.id 
+            ? { ...t, deezerResults: [], isSearching: false, downloadStatus: 'not_found' } 
+            : t
+        ));
+        toast.error(`Não encontrado no Deezer`, {
+          description: `${track.artist} - ${track.title}`
+        });
+      }
+    } catch (error) {
+      console.error('Erro na busca Deezer:', error);
+      setCapturedTracks(prev => prev.map(t => 
+        t.id === track.id 
+          ? { ...t, isSearching: false, downloadStatus: 'pending' } 
+          : t
+      ));
+      toast.error('Erro ao buscar no Deezer');
+    }
+  };
+
+  // Download all missing tracks as batch
+  const handleBatchDownload = async () => {
+    const missingTracks = capturedTracks.filter(t => !t.matchedFile);
+    if (missingTracks.length === 0) {
+      toast.info('Todas as músicas já estão no acervo!');
+      return;
+    }
+
+    toast.loading(`Buscando ${missingTracks.length} músicas no Deezer...`, { id: 'batch-search' });
+
+    const foundTracks: DeezerTrack[] = [];
+    let notFoundCount = 0;
+
+    for (const track of missingTracks) {
+      try {
+        setCapturedTracks(prev => prev.map(t => 
+          t.id === track.id ? { ...t, isSearching: true, downloadStatus: 'searching' } : t
+        ));
+
+        const results = await searchByArtistTitle(track.artist, track.title);
+        
+        if (results.length > 0) {
+          foundTracks.push(results[0]);
+          setCapturedTracks(prev => prev.map(t => 
+            t.id === track.id 
+              ? { ...t, deezerResults: results, isSearching: false, downloadStatus: 'queued' } 
+              : t
+          ));
+        } else {
+          notFoundCount++;
+          setCapturedTracks(prev => prev.map(t => 
+            t.id === track.id 
+              ? { ...t, isSearching: false, downloadStatus: 'not_found' } 
+              : t
+          ));
+        }
+      } catch (error) {
+        console.error(`Erro buscando ${track.artist} - ${track.title}:`, error);
+        notFoundCount++;
+      }
+    }
+
+    toast.dismiss('batch-search');
+
+    if (foundTracks.length > 0) {
+      // Generate and download batch file
+      downloadDeemixBatch(foundTracks, `radio_batch_${new Date().toISOString().split('T')[0]}.txt`);
+      
+      toast.success(`Batch gerado com ${foundTracks.length} músicas!`, {
+        description: notFoundCount > 0 ? `${notFoundCount} não encontradas` : undefined
+      });
+
+      // Update database
+      for (const track of foundTracks) {
+        await supabase
+          .from('notificacoes_musicas')
+          .update({ status: 'batch_gerado' })
+          .eq('titulo', track.title);
+      }
+    } else {
+      toast.error('Nenhuma música encontrada no Deezer');
+    }
+  };
+
   return (
     <Card className="glass-card xl:col-span-2">
       <CardHeader className="pb-2">
@@ -548,14 +688,43 @@ export function RealTimeCapture({
 
                   {/* Actions */}
                   {!track.matchedFile && (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-6 w-6 shrink-0"
-                      title="Baixar"
-                    >
-                      <Download className="h-3 w-3" />
-                    </Button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {track.downloadStatus === 'found' && track.deezerResults?.[0] && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-6 w-6 text-broadcast-green"
+                          title="Abrir no Deemix"
+                          onClick={() => openDeemixDownload(track.deezerResults![0].id)}
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                        </Button>
+                      )}
+                      {track.downloadStatus === 'queued' && (
+                        <Badge variant="outline" className="text-[8px] h-4 px-1 bg-primary/20">
+                          Na fila
+                        </Badge>
+                      )}
+                      {track.downloadStatus === 'not_found' && (
+                        <Badge variant="destructive" className="text-[8px] h-4 px-1">
+                          Não encontrado
+                        </Badge>
+                      )}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6"
+                        title="Buscar no Deezer"
+                        onClick={() => handleSearchAndDownload(track)}
+                        disabled={track.isSearching}
+                      >
+                        {track.isSearching ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Search className="h-3 w-3" />
+                        )}
+                      </Button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -563,11 +732,24 @@ export function RealTimeCapture({
           </ScrollArea>
         )}
 
-        {/* Footer */}
+        {/* Footer with batch download button */}
         {lastCapture && (
           <div className="flex items-center justify-between text-[10px] text-muted-foreground pt-2 border-t">
             <span>Última captura: {formatTime(lastCapture)}</span>
-            <span>{capturedTracks.filter(t => !t.matchedFile).length} músicas para baixar</span>
+            <div className="flex items-center gap-2">
+              <span>{capturedTracks.filter(t => !t.matchedFile).length} músicas para baixar</span>
+              {capturedTracks.filter(t => !t.matchedFile).length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-5 text-[10px] gap-1"
+                  onClick={handleBatchDownload}
+                >
+                  <FileDown className="h-3 w-3" />
+                  Baixar Todas
+                </Button>
+              )}
+            </div>
           </div>
         )}
       </CardContent>
