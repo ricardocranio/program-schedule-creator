@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -16,13 +17,15 @@ import {
   GripVertical,
   Radio,
   FolderOpen,
-  Check
+  Check,
+  RefreshCw,
+  Clock
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { RadioStation } from '@/types/radio';
 
-interface SequenceSlot {
+export interface SequenceSlot {
   positions: string; // "1-5", "6-9", "10"
   radioId: string;
   radioName: string;
@@ -35,6 +38,8 @@ interface SequenceConfigProps {
 
 const STORAGE_KEY = 'radiograde_sequence_config';
 const FOLDER_KEY = 'radiograde_export_folder_path';
+const AUTO_SAVE_KEY = 'radiograde_auto_save_enabled';
+const AUTO_SAVE_INTERVAL_KEY = 'radiograde_auto_save_interval';
 
 // Sequência padrão PGM-FM
 const DEFAULT_SEQUENCE: SequenceSlot[] = [
@@ -55,8 +60,21 @@ export function SequenceConfig({ radioStations, onSequenceChange }: SequenceConf
   
   const [exportFolder, setExportFolder] = useState<FileSystemDirectoryHandle | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  
+  // Auto-save settings
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => {
+    return localStorage.getItem(AUTO_SAVE_KEY) === 'true';
+  });
+  
+  const [autoSaveInterval, setAutoSaveInterval] = useState(() => {
+    return parseInt(localStorage.getItem(AUTO_SAVE_INTERVAL_KEY) || '20');
+  });
+  
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [nextSaveIn, setNextSaveIn] = useState<number | null>(null);
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Salvar sequência
+  // Salvar sequência automaticamente
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sequence));
     onSequenceChange(sequence);
@@ -66,6 +84,34 @@ export function SequenceConfig({ radioStations, onSequenceChange }: SequenceConf
   useEffect(() => {
     localStorage.setItem(FOLDER_KEY, exportPath);
   }, [exportPath]);
+  
+  // Salvar configurações de auto-save
+  useEffect(() => {
+    localStorage.setItem(AUTO_SAVE_KEY, autoSaveEnabled.toString());
+  }, [autoSaveEnabled]);
+  
+  useEffect(() => {
+    localStorage.setItem(AUTO_SAVE_INTERVAL_KEY, autoSaveInterval.toString());
+  }, [autoSaveInterval]);
+  
+  // Countdown do próximo salvamento
+  useEffect(() => {
+    if (!autoSaveEnabled || !lastSaved) {
+      setNextSaveIn(null);
+      return;
+    }
+    
+    const updateCountdown = () => {
+      const elapsed = (Date.now() - lastSaved.getTime()) / 1000 / 60;
+      const remaining = Math.max(0, autoSaveInterval - elapsed);
+      setNextSaveIn(Math.ceil(remaining));
+    };
+    
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 10000);
+    
+    return () => clearInterval(interval);
+  }, [autoSaveEnabled, lastSaved, autoSaveInterval]);
 
   // Atualizar slot
   const updateSlot = (index: number, field: keyof SequenceSlot, value: string) => {
@@ -77,6 +123,8 @@ export function SequenceConfig({ radioStations, onSequenceChange }: SequenceConf
       const station = radioStations.find(s => s.id === value);
       if (station) {
         newSequence[index].radioName = station.name;
+      } else if (value === 'random_pop') {
+        newSequence[index].radioName = 'Disney/Metro';
       }
     }
     
@@ -122,6 +170,7 @@ export function SequenceConfig({ radioStations, onSequenceChange }: SequenceConf
       });
       setExportFolder(dirHandle);
       setExportPath(dirHandle.name);
+      localStorage.setItem('radiograde_export_folder_handle', 'set');
       toast.success(`Pasta selecionada: ${dirHandle.name}`);
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
@@ -136,6 +185,11 @@ export function SequenceConfig({ radioStations, onSequenceChange }: SequenceConf
     if (start <= 5) return 'bg-blue-500';
     if (start <= 9) return 'bg-red-500';
     return 'bg-purple-500';
+  };
+  
+  // Formatar hora
+  const formatTime = (date: Date) => {
+    return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   };
 
   return (
@@ -219,6 +273,58 @@ export function SequenceConfig({ radioStations, onSequenceChange }: SequenceConf
               Padrão
             </Button>
           </div>
+        </div>
+
+        <Separator />
+        
+        {/* Auto-save configuração */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs flex items-center gap-1">
+              <RefreshCw className="h-3 w-3" />
+              Salvar Automaticamente
+            </Label>
+            <Switch
+              checked={autoSaveEnabled}
+              onCheckedChange={setAutoSaveEnabled}
+            />
+          </div>
+          
+          {autoSaveEnabled && (
+            <div className="space-y-2 p-2 rounded-lg bg-secondary/30">
+              <div className="flex items-center gap-2">
+                <Label className="text-xs flex-1">Intervalo (minutos)</Label>
+                <Select 
+                  value={autoSaveInterval.toString()} 
+                  onValueChange={(v) => setAutoSaveInterval(parseInt(v))}
+                >
+                  <SelectTrigger className="w-20 h-7 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-popover border-border z-50">
+                    <SelectItem value="5">5 min</SelectItem>
+                    <SelectItem value="10">10 min</SelectItem>
+                    <SelectItem value="15">15 min</SelectItem>
+                    <SelectItem value="20">20 min</SelectItem>
+                    <SelectItem value="30">30 min</SelectItem>
+                    <SelectItem value="60">60 min</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                {lastSaved && (
+                  <span>Último: {formatTime(lastSaved)}</span>
+                )}
+                {nextSaveIn !== null && nextSaveIn > 0 && (
+                  <span className="flex items-center gap-1">
+                    <Clock className="h-2.5 w-2.5" />
+                    Próximo em {nextSaveIn} min
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <Separator />
