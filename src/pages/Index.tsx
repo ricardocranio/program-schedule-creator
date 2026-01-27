@@ -14,6 +14,7 @@ import { MusicLibraryManager } from '@/components/MusicLibraryManager';
 import { MusicDownloader } from '@/components/MusicDownloader';
 import { AutoSyncManager } from '@/components/AutoSyncManager';
 import { MissingTrackNotifications } from '@/components/MissingTrackNotifications';
+import { RealTimeCapture } from '@/components/RealTimeCapture';
 import { SlotEditorDialog } from '@/components/SlotEditorDialog';
 import { ImportExportDialog } from '@/components/ImportExportDialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -201,50 +202,63 @@ export default function Index() {
 
           {/* Tab Montagem */}
           <TabsContent value="montagem" className="mt-0">
-            <div className="grid lg:grid-cols-2 xl:grid-cols-6 gap-4">
-              <SequenceConfig
-                radioStations={radioStations}
-                onSequenceChange={(seq) => gradeEngine.setSequence(seq)}
-              />
-              <SequenceBuilder
-                radioStations={radioStations.filter(s => s.enabled)}
-                musicLibrary={musicLibrary}
-                onSequenceComplete={handleSequenceComplete}
-                onAutoAssemble={updateDaySchedule}
-              />
-              <AutoSyncManager
-                schedule={schedule}
-                radioStations={radioStations}
-                musicLibrary={musicLibrary}
-                onUpdateStations={saveStations}
-                onExportSchedule={exportSchedule}
-                onUpdateSchedule={updateDaySchedule}
-              />
-              <MissingTrackNotifications
-                missingTracks={missingTracks}
-                notificationsEnabled={notificationsEnabled}
-                onToggleNotifications={setNotificationsEnabled}
-                onDownload={markAsDownloading}
-                onDismiss={dismissTrack}
-                onClearAll={clearAllNotifications}
-                onRefresh={fetchMissingTracks}
-              />
-              <MusicDownloader
-                missingTracks={radioStations.flatMap(s => 
-                  (s.ultimasTocadas || []).map(song => {
-                    const parts = song.includes(' - ') ? song.split(' - ') : ['', song];
-                    return { artist: parts[0]?.trim() || '', title: parts[1]?.trim() || song };
-                  })
-                )}
-                musicLibrary={musicLibrary}
-              />
-              <MusicLibraryManager
-                library={musicLibrary}
-                folders={musicFolders}
-                onUpdateLibrary={saveLibrary}
-                onAddFolder={addMusicFolder}
-                onRemoveFolder={removeMusicFolder}
-              />
+            <div className="space-y-4">
+              {/* Primeira linha: Captura em Tempo Real */}
+              <div className="grid lg:grid-cols-2 gap-4">
+                <RealTimeCapture
+                  radioStations={radioStations}
+                  musicLibrary={musicLibrary}
+                  onUpdateStations={saveStations}
+                  onMissingTrack={addMissingTrack}
+                />
+                <MissingTrackNotifications
+                  missingTracks={missingTracks}
+                  notificationsEnabled={notificationsEnabled}
+                  onToggleNotifications={setNotificationsEnabled}
+                  onDownload={markAsDownloading}
+                  onDismiss={dismissTrack}
+                  onClearAll={clearAllNotifications}
+                  onRefresh={fetchMissingTracks}
+                />
+              </div>
+              
+              {/* Segunda linha: Configurações de montagem */}
+              <div className="grid lg:grid-cols-2 xl:grid-cols-5 gap-4">
+                <SequenceConfig
+                  radioStations={radioStations}
+                  onSequenceChange={(seq) => gradeEngine.setSequence(seq)}
+                />
+                <SequenceBuilder
+                  radioStations={radioStations.filter(s => s.enabled)}
+                  musicLibrary={musicLibrary}
+                  onSequenceComplete={handleSequenceComplete}
+                  onAutoAssemble={updateDaySchedule}
+                />
+                <AutoSyncManager
+                  schedule={schedule}
+                  radioStations={radioStations}
+                  musicLibrary={musicLibrary}
+                  onUpdateStations={saveStations}
+                  onExportSchedule={exportSchedule}
+                  onUpdateSchedule={updateDaySchedule}
+                />
+                <MusicDownloader
+                  missingTracks={radioStations.flatMap(s => 
+                    (s.ultimasTocadas || []).map(song => {
+                      const parts = song.includes(' - ') ? song.split(' - ') : ['', song];
+                      return { artist: parts[0]?.trim() || '', title: parts[1]?.trim() || song };
+                    })
+                  )}
+                  musicLibrary={musicLibrary}
+                />
+                <MusicLibraryManager
+                  library={musicLibrary}
+                  folders={musicFolders}
+                  onUpdateLibrary={saveLibrary}
+                  onAddFolder={addMusicFolder}
+                  onRemoveFolder={removeMusicFolder}
+                />
+              </div>
             </div>
           </TabsContent>
 
