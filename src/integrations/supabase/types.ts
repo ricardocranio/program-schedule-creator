@@ -14,7 +14,132 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      notificacoes_musicas: {
+        Row: {
+          arquivo_baixado: string | null
+          artista: string
+          created_at: string
+          id: string
+          prioridade: number | null
+          radio_origem: string
+          status: string
+          tentativas_download: number | null
+          titulo: string
+          updated_at: string
+        }
+        Insert: {
+          arquivo_baixado?: string | null
+          artista: string
+          created_at?: string
+          id?: string
+          prioridade?: number | null
+          radio_origem: string
+          status?: string
+          tentativas_download?: number | null
+          titulo: string
+          updated_at?: string
+        }
+        Update: {
+          arquivo_baixado?: string | null
+          artista?: string
+          created_at?: string
+          id?: string
+          prioridade?: number | null
+          radio_origem?: string
+          status?: string
+          tentativas_download?: number | null
+          titulo?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      radio_historico: {
+        Row: {
+          arquivo_correspondente: string | null
+          artista: string | null
+          created_at: string
+          download_concluido: boolean | null
+          download_iniciado: boolean | null
+          encontrado_no_acervo: boolean | null
+          id: string
+          musica: string
+          notificacao_enviada: boolean | null
+          radio_id: string
+          radio_nome: string
+          timestamp: string
+          titulo: string | null
+        }
+        Insert: {
+          arquivo_correspondente?: string | null
+          artista?: string | null
+          created_at?: string
+          download_concluido?: boolean | null
+          download_iniciado?: boolean | null
+          encontrado_no_acervo?: boolean | null
+          id?: string
+          musica: string
+          notificacao_enviada?: boolean | null
+          radio_id: string
+          radio_nome: string
+          timestamp?: string
+          titulo?: string | null
+        }
+        Update: {
+          arquivo_correspondente?: string | null
+          artista?: string | null
+          created_at?: string
+          download_concluido?: boolean | null
+          download_iniciado?: boolean | null
+          encontrado_no_acervo?: boolean | null
+          id?: string
+          musica?: string
+          notificacao_enviada?: boolean | null
+          radio_id?: string
+          radio_nome?: string
+          timestamp?: string
+          titulo?: string | null
+        }
+        Relationships: []
+      }
+      radios_monitoradas: {
+        Row: {
+          created_at: string
+          habilitada: boolean | null
+          id: string
+          nome: string
+          radio_id: string
+          tocando_agora: string | null
+          ultima_atualizacao: string | null
+          ultimas_tocadas: string[] | null
+          updated_at: string
+          url: string | null
+        }
+        Insert: {
+          created_at?: string
+          habilitada?: boolean | null
+          id?: string
+          nome: string
+          radio_id: string
+          tocando_agora?: string | null
+          ultima_atualizacao?: string | null
+          ultimas_tocadas?: string[] | null
+          updated_at?: string
+          url?: string | null
+        }
+        Update: {
+          created_at?: string
+          habilitada?: boolean | null
+          id?: string
+          nome?: string
+          radio_id?: string
+          tocando_agora?: string | null
+          ultima_atualizacao?: string | null
+          ultimas_tocadas?: string[] | null
+          updated_at?: string
+          url?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

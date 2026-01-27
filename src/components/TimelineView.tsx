@@ -7,10 +7,18 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
-import { Clock, Music, AlertCircle, Radio, Disc, Pause, Play, RefreshCw, FolderOpen, FileText } from 'lucide-react';
+import { Clock, Music, AlertCircle, Radio, Disc, Pause, Play, RefreshCw, FolderOpen, FileText, Database, Bell } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { normalizeText } from '@/lib/scheduleParser';
 import { toast } from 'sonner';
+import { supabase } from '@/integrations/supabase/client';
+import { 
+  readRadioHistoryFromFolder, 
+  matchRadioDataToStations,
+  extractAllSongs,
+  ParsedRadioData 
+} from '@/lib/radioHistoricoParser';
+import { findBestMatch } from '@/lib/fuzzyMatch';
 
 interface TimelineViewProps {
   slots: TimeSlot[];
@@ -19,6 +27,7 @@ interface TimelineViewProps {
   radioStations?: RadioStation[];
   onSlotClick?: (slot: TimeSlot) => void;
   onUpdateStations?: (stations: RadioStation[]) => void;
+  onMissingTrack?: (artist: string, title: string, radioName: string) => void;
 }
 
 interface NowPlayingStation {
@@ -38,7 +47,8 @@ export function TimelineView({
   musicLibrary, 
   radioStations = [], 
   onSlotClick,
-  onUpdateStations 
+  onUpdateStations,
+  onMissingTrack 
 }: TimelineViewProps) {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isAutoRefresh, setIsAutoRefresh] = useState(true);
@@ -48,9 +58,12 @@ export function TimelineView({
   const [nextRefreshIn, setNextRefreshIn] = useState<number>(90);
   const [historyFolder, setHistoryFolder] = useState<FileSystemDirectoryHandle | null>(null);
   const [lastHash, setLastHash] = useState('');
+  const [dataSource, setDataSource] = useState<'local' | 'database'>('local');
+  const [sourceFileName, setSourceFileName] = useState<string>('');
   
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
+  const notifiedTracksRef = useRef<Set<string>>(new Set());
 
   // Match song against library
   const findMatchInLibrary = useCallback((songText: string): string | null => {
@@ -60,160 +73,150 @@ export function TimelineView({
     const artist = parts[0]?.trim() || '';
     const title = parts[1]?.trim() || songText.trim();
     
-    const normalizedTitle = normalizeText(title.toLowerCase());
-    const normalizedArtist = normalizeText(artist.toLowerCase());
-    
-    for (const file of musicLibrary) {
-      const normalizedFile = normalizeText(file.toLowerCase().replace(/\.mp3$/i, ''));
-      
-      if (normalizedFile.includes(normalizedTitle) && 
-          (normalizedArtist === '' || normalizedFile.includes(normalizedArtist))) {
-        return file;
-      }
-    }
-    
-    // Partial match
-    for (const file of musicLibrary) {
-      const normalizedFile = normalizeText(file.toLowerCase().replace(/\.mp3$/i, ''));
-      const titleWords = normalizedTitle.split(/\s+/).filter(w => w.length > 2);
-      const matchedWords = titleWords.filter(word => normalizedFile.includes(word));
-      
-      if (matchedWords.length >= Math.ceil(titleWords.length * 0.5)) {
-        return file;
-      }
-    }
-    
-    return null;
+    const match = findBestMatch(artist, title, musicLibrary);
+    return match && match.score >= 0.5 ? match.file : null;
   }, [musicLibrary]);
 
-  // Normalize station name for matching
-  const normalizeStationName = (name: string): string => {
-    return name.toLowerCase()
-      .replace(/\s+/g, '')
-      .replace(/fm$/i, '')
-      .replace(/rádio|radio/gi, '')
-      .trim();
-  };
+  // Notify about missing track
+  const notifyMissingTrack = useCallback((songText: string, radioName: string) => {
+    if (!onMissingTrack || !songText) return;
+    
+    const key = songText.toLowerCase();
+    if (notifiedTracksRef.current.has(key)) return;
+    
+    const parts = songText.split(' - ');
+    const artist = parts[0]?.trim() || '';
+    const title = parts[1]?.trim() || songText.trim();
+    
+    // Check if not in library
+    const match = findMatchInLibrary(songText);
+    if (!match) {
+      notifiedTracksRef.current.add(key);
+      onMissingTrack(artist, title, radioName);
+    }
+  }, [onMissingTrack, findMatchInLibrary]);
 
-  // Read radio_historico.json from folder
-  const readHistoryFile = useCallback(async () => {
+  // Read from local folder
+  const readFromLocalFolder = useCallback(async () => {
     if (!historyFolder || !onUpdateStations) return;
     
     setIsLoading(true);
     try {
-      // Try radio_historico.json first
-      let content: string | null = null;
-      let fileName = '';
+      const result = await readRadioHistoryFromFolder(historyFolder);
       
-      try {
-        const handle = await historyFolder.getFileHandle('radio_historico.json');
-        const file = await handle.getFile();
-        content = await file.text();
-        fileName = 'radio_historico.json';
-      } catch {
-        // Try radio_relatorio.txt
-        try {
-          const handle = await historyFolder.getFileHandle('radio_relatorio.txt');
-          const file = await handle.getFile();
-          content = await file.text();
-          fileName = 'radio_relatorio.txt';
-        } catch {
-          // No file found
-        }
-      }
-      
-      if (!content) {
-        console.log('Nenhum arquivo de histórico encontrado');
+      if (!result) {
+        console.log('Nenhum arquivo de histórico encontrado na pasta');
         return;
       }
-      
-      const hash = btoa(content.slice(0, 200) + content.length);
-      if (hash === lastHash) {
-        // No changes
-        return;
+
+      // Check for changes using hash
+      const contentHash = btoa(JSON.stringify(result.data).slice(0, 200) + result.data.length);
+      if (contentHash === lastHash) {
+        return; // No changes
       }
       
-      setLastHash(hash);
+      setLastHash(contentHash);
+      setSourceFileName(result.fileName);
       
-      // Process JSON format
-      if (fileName.endsWith('.json')) {
-        try {
-          const data = JSON.parse(content);
-          if (data.radios) {
-            const updatedStations = [...radioStations];
-            
-            for (const [, radioData] of Object.entries(data.radios) as [string, any][]) {
-              const nome = radioData.nome?.trim();
-              if (!nome) continue;
-              
-              const normalizedNome = normalizeStationName(nome);
-              const stationIdx = updatedStations.findIndex(s => 
-                normalizeStationName(s.name) === normalizedNome ||
-                normalizedNome.includes(normalizeStationName(s.name)) ||
-                normalizeStationName(s.name).includes(normalizedNome)
-              );
-              
-              if (stationIdx >= 0) {
-                updatedStations[stationIdx] = {
-                  ...updatedStations[stationIdx],
-                  historico: radioData.historico_completo || [],
-                  tocandoAgora: radioData.ultimo_dado?.tocando_agora || '',
-                  ultimasTocadas: (radioData.ultimo_dado?.ultimas_tocadas || []).slice(0, 5),
-                };
-              }
-            }
-            
-            onUpdateStations(updatedStations);
-            setLastSync(new Date());
-            console.log(`[Timeline] Atualizado via ${fileName}`);
-          }
-        } catch (e) {
-          console.error('Erro ao processar JSON:', e);
-        }
-      } else {
-        // Process TXT format (linha por linha: "Radio: Artista - Música")
-        const lines = content.split('\n').filter(l => l.trim());
-        const updatedStations = [...radioStations];
-        
-        for (const line of lines) {
-          const match = line.match(/^(.+?):\s*(.+)$/);
-          if (match) {
-            const [, radioName, songInfo] = match;
-            const normalizedRadio = normalizeStationName(radioName);
-            
-            const stationIdx = updatedStations.findIndex(s => 
-              normalizeStationName(s.name) === normalizedRadio ||
-              normalizedRadio.includes(normalizeStationName(s.name))
-            );
-            
-            if (stationIdx >= 0) {
-              const current = updatedStations[stationIdx].tocandoAgora;
-              const ultimas = updatedStations[stationIdx].ultimasTocadas || [];
-              
-              // Move current to ultimas if different
-              if (current && current !== songInfo.trim() && !ultimas.includes(current)) {
-                ultimas.unshift(current);
-              }
-              
-              updatedStations[stationIdx] = {
-                ...updatedStations[stationIdx],
-                tocandoAgora: songInfo.trim(),
-                ultimasTocadas: ultimas.slice(0, 5),
-              };
-            }
-          }
-        }
-        
-        onUpdateStations(updatedStations);
-        setLastSync(new Date());
-        console.log(`[Timeline] Atualizado via ${fileName}`);
+      // Update stations
+      const updatedStations = matchRadioDataToStations(result.data, radioStations);
+      onUpdateStations(updatedStations);
+      
+      // Notify about missing tracks
+      const allSongs = extractAllSongs(result.data);
+      for (const song of allSongs) {
+        const fullSong = song.artist ? `${song.artist} - ${song.title}` : song.title;
+        notifyMissingTrack(fullSong, song.radioName);
       }
+      
+      setLastSync(new Date());
+      console.log(`[Timeline] Atualizado via ${result.fileName} - ${result.data.length} rádios`);
     } catch (error) {
       console.error('Erro ao ler arquivo de histórico:', error);
     } finally {
       setIsLoading(false);
     }
-  }, [historyFolder, radioStations, onUpdateStations, lastHash]);
+  }, [historyFolder, radioStations, onUpdateStations, lastHash, notifyMissingTrack]);
+
+  // Read from database
+  const readFromDatabase = useCallback(async () => {
+    if (!onUpdateStations) return;
+    
+    setIsLoading(true);
+    try {
+      // Fetch from radios_monitoradas table
+      const { data: radiosData, error: radiosError } = await supabase
+        .from('radios_monitoradas')
+        .select('*')
+        .eq('habilitada', true);
+
+      if (radiosError) {
+        console.error('Erro ao buscar rádios:', radiosError);
+        return;
+      }
+
+      if (radiosData && radiosData.length > 0) {
+        const updatedStations = [...radioStations];
+        
+        for (const dbRadio of radiosData) {
+          const stationIdx = updatedStations.findIndex(s => 
+            s.id === dbRadio.radio_id || 
+            s.name.toLowerCase().includes(dbRadio.nome.toLowerCase())
+          );
+
+          if (stationIdx >= 0) {
+            updatedStations[stationIdx] = {
+              ...updatedStations[stationIdx],
+              tocandoAgora: dbRadio.tocando_agora || '',
+              ultimasTocadas: dbRadio.ultimas_tocadas || [],
+            };
+
+            // Notify about missing tracks
+            if (dbRadio.tocando_agora) {
+              notifyMissingTrack(dbRadio.tocando_agora, dbRadio.nome);
+            }
+            for (const song of (dbRadio.ultimas_tocadas || [])) {
+              notifyMissingTrack(song, dbRadio.nome);
+            }
+          }
+        }
+
+        onUpdateStations(updatedStations);
+        setSourceFileName('Banco de Dados');
+        setLastSync(new Date());
+        console.log(`[Timeline] Atualizado via banco de dados - ${radiosData.length} rádios`);
+      }
+
+      // Also fetch recent history
+      const { data: historyData } = await supabase
+        .from('radio_historico')
+        .select('*')
+        .order('timestamp', { ascending: false })
+        .limit(100);
+
+      if (historyData) {
+        for (const entry of historyData) {
+          const fullSong = entry.artista 
+            ? `${entry.artista} - ${entry.titulo}` 
+            : entry.musica;
+          notifyMissingTrack(fullSong, entry.radio_nome);
+        }
+      }
+    } catch (error) {
+      console.error('Erro ao ler do banco de dados:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [radioStations, onUpdateStations, notifyMissingTrack]);
+
+  // Main read function based on data source
+  const readHistoryData = useCallback(async () => {
+    if (dataSource === 'local' && historyFolder) {
+      await readFromLocalFolder();
+    } else if (dataSource === 'database') {
+      await readFromDatabase();
+    }
+  }, [dataSource, historyFolder, readFromLocalFolder, readFromDatabase]);
 
   // Select history folder
   const selectHistoryFolder = async () => {
@@ -221,13 +224,22 @@ export function TimelineView({
       // @ts-ignore
       const dir = await window.showDirectoryPicker({ mode: 'read' });
       setHistoryFolder(dir);
-      toast.success(`Monitorando: ${dir.name}`);
-      setTimeout(() => readHistoryFile(), 500);
+      setDataSource('local');
+      toast.success(`Monitorando pasta: ${dir.name}`);
+      setTimeout(() => readHistoryData(), 500);
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         toast.error('Erro ao selecionar pasta');
       }
     }
+  };
+
+  // Switch to database mode
+  const switchToDatabase = () => {
+    setDataSource('database');
+    setHistoryFolder(null);
+    toast.info('Usando dados do banco de dados');
+    setTimeout(() => readFromDatabase(), 500);
   };
 
   // Auto-refresh timer
@@ -249,10 +261,10 @@ export function TimelineView({
       setNextRefreshIn(prev => Math.max(0, prev - 1));
     }, 1000);
     
-    // Read file interval
-    if (historyFolder) {
+    // Read data interval
+    if (historyFolder || dataSource === 'database') {
       refreshTimerRef.current = setInterval(() => {
-        readHistoryFile();
+        readHistoryData();
         setNextRefreshIn(90);
       }, REFRESH_INTERVAL);
     }
@@ -262,7 +274,7 @@ export function TimelineView({
       if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
-  }, [isAutoRefresh, isPaused, historyFolder, readHistoryFile]);
+  }, [isAutoRefresh, isPaused, historyFolder, dataSource, readHistoryData]);
 
   // Processar rádios para exibição
   const processRadioStations = useCallback((): NowPlayingStation[] => {
@@ -300,7 +312,7 @@ export function TimelineView({
   };
 
   const handleRefresh = () => {
-    readHistoryFile();
+    readHistoryData();
     setNextRefreshIn(90);
   };
 
@@ -316,16 +328,35 @@ export function TimelineView({
             )}
           </CardTitle>
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Folder selector */}
-            <Button
-              variant={historyFolder ? "secondary" : "outline"}
-              size="sm"
-              className="h-7 gap-1 text-xs"
-              onClick={selectHistoryFolder}
-            >
-              <FolderOpen className="h-3 w-3" />
-              {historyFolder ? historyFolder.name : "Selecionar Pasta"}
-            </Button>
+            {/* Data source selector */}
+            <div className="flex items-center gap-1">
+              <Button
+                variant={dataSource === 'local' ? "default" : "outline"}
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={selectHistoryFolder}
+              >
+                <FolderOpen className="h-3 w-3" />
+                {historyFolder ? historyFolder.name : "Pasta Local"}
+              </Button>
+              <Button
+                variant={dataSource === 'database' ? "default" : "outline"}
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={switchToDatabase}
+              >
+                <Database className="h-3 w-3" />
+                Banco
+              </Button>
+            </div>
+            
+            {/* Source info */}
+            {sourceFileName && (
+              <Badge variant="outline" className="text-[10px] gap-1">
+                <FileText className="h-2.5 w-2.5" />
+                {sourceFileName}
+              </Badge>
+            )}
             
             {/* Status */}
             <Badge variant="outline" className="text-xs gap-1">
@@ -346,7 +377,7 @@ export function TimelineView({
             </div>
             
             {/* Countdown */}
-            {isAutoRefresh && !isPaused && historyFolder && (
+            {isAutoRefresh && !isPaused && (historyFolder || dataSource === 'database') && (
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <Progress value={(nextRefreshIn / 90) * 100} className="w-12 h-1.5" />
                 <span>{nextRefreshIn}s</span>
@@ -369,7 +400,7 @@ export function TimelineView({
                 size="icon"
                 className="h-7 w-7"
                 onClick={handleRefresh}
-                disabled={isLoading || !historyFolder}
+                disabled={isLoading || (!historyFolder && dataSource === 'local')}
                 title="Atualizar agora"
               >
                 <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
@@ -389,24 +420,33 @@ export function TimelineView({
         </div>
       </CardHeader>
       <CardContent>
-        {!historyFolder ? (
+        {!historyFolder && dataSource === 'local' ? (
           <div className="flex flex-col items-center justify-center h-48 text-center">
             <FileText className="h-12 w-12 text-muted-foreground mb-2" />
             <p className="text-muted-foreground">Selecione a pasta com os arquivos de monitoramento</p>
             <p className="text-xs text-muted-foreground mt-1">
               Procure por <code className="bg-muted px-1 rounded">radio_historico.json</code> ou <code className="bg-muted px-1 rounded">radio_relatorio.txt</code>
             </p>
-            <Button size="sm" className="mt-3 gap-1" onClick={selectHistoryFolder}>
-              <FolderOpen className="h-3 w-3" />
-              Selecionar Pasta
-            </Button>
+            <div className="flex gap-2 mt-3">
+              <Button size="sm" className="gap-1" onClick={selectHistoryFolder}>
+                <FolderOpen className="h-3 w-3" />
+                Selecionar Pasta
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1" onClick={switchToDatabase}>
+                <Database className="h-3 w-3" />
+                Usar Banco de Dados
+              </Button>
+            </div>
           </div>
         ) : nowPlayingStations.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-center">
             <Radio className="h-12 w-12 text-muted-foreground mb-2" />
             <p className="text-muted-foreground">Nenhuma rádio ativa encontrada</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Verifique se o radio_monitor_supabase.py está rodando
+              {dataSource === 'local' 
+                ? 'Verifique se o radio_monitor_supabase.py está rodando'
+                : 'Verifique se há dados no banco de dados'
+              }
             </p>
           </div>
         ) : (
@@ -459,6 +499,9 @@ export function TimelineView({
                       <div className="flex items-center gap-1 text-destructive">
                         <AlertCircle className="h-3 w-3" />
                         <span className="text-[10px]">Não encontrada → <span className="font-mono">mus</span></span>
+                        <span title="Notificação enviada">
+                          <Bell className="h-3 w-3 ml-auto animate-pulse" />
+                        </span>
                       </div>
                     )}
                   </div>
@@ -531,6 +574,10 @@ export function TimelineView({
             <div className="flex items-center gap-2 text-xs">
               <AlertCircle className="h-3 w-3 text-destructive" />
               <span className="text-muted-foreground">Não encontrada</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <Bell className="h-3 w-3 text-primary" />
+              <span className="text-muted-foreground">Notificação</span>
             </div>
           </div>
           {lastSync && (
