@@ -1,14 +1,17 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { TimeSlot, DayOfWeek, DAY_NAMES, RadioStation } from '@/types/radio';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { Clock, Music, Volume2, AlertCircle, Radio, Disc, Pause, Play, RefreshCw } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
+import { Clock, Music, AlertCircle, Radio, Disc, Pause, Play, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { normalizeText } from '@/lib/scheduleParser';
+import { fetchNowPlaying, mergeNowPlayingData } from '@/lib/radioApi';
+import { toast } from 'sonner';
 
 interface TimelineViewProps {
   slots: TimeSlot[];
@@ -16,6 +19,7 @@ interface TimelineViewProps {
   musicLibrary: string[];
   radioStations?: RadioStation[];
   onSlotClick?: (slot: TimeSlot) => void;
+  onUpdateStations?: (stations: RadioStation[]) => void;
 }
 
 interface NowPlayingStation {
@@ -27,21 +31,26 @@ interface NowPlayingStation {
   isLive: boolean;
 }
 
-export function TimelineView({ slots, day, musicLibrary, radioStations = [], onSlotClick }: TimelineViewProps) {
+const REFRESH_INTERVAL = 90_000; // 90 segundos
+
+export function TimelineView({ 
+  slots, 
+  day, 
+  musicLibrary, 
+  radioStations = [], 
+  onSlotClick,
+  onUpdateStations 
+}: TimelineViewProps) {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isAutoRefresh, setIsAutoRefresh] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
-
-  // Auto-atualizar a cada 30 segundos
-  useEffect(() => {
-    if (!isAutoRefresh || isPaused) return;
-    
-    const interval = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 30000);
-    
-    return () => clearInterval(interval);
-  }, [isAutoRefresh, isPaused]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [lastFetch, setLastFetch] = useState<Date | null>(null);
+  const [nextRefreshIn, setNextRefreshIn] = useState<number>(90);
+  const [apiStatus, setApiStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
   // Match song against library
   const findMatchInLibrary = useCallback((songText: string): string | null => {
@@ -77,6 +86,66 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
     return null;
   }, [musicLibrary]);
 
+  // Fetch now playing from API
+  const fetchLiveData = useCallback(async () => {
+    if (radioStations.length === 0) return;
+    
+    setIsLoading(true);
+    try {
+      const response = await fetchNowPlaying(radioStations);
+      
+      if (response.success && response.results.length > 0) {
+        // Merge live data with stations
+        if (onUpdateStations) {
+          const updated = mergeNowPlayingData(radioStations, response.results);
+          onUpdateStations(updated);
+        }
+        setApiStatus('success');
+        setLastFetch(new Date());
+      } else if (response.error) {
+        console.warn('API error:', response.error);
+        setApiStatus('error');
+      }
+    } catch (error) {
+      console.error('Error fetching live data:', error);
+      setApiStatus('error');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [radioStations, onUpdateStations]);
+
+  // Auto-refresh timer
+  useEffect(() => {
+    if (!isAutoRefresh || isPaused) {
+      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+      return;
+    }
+    
+    // Update current time
+    const timeInterval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    
+    // Countdown
+    setNextRefreshIn(90);
+    countdownRef.current = setInterval(() => {
+      setNextRefreshIn(prev => Math.max(0, prev - 1));
+    }, 1000);
+    
+    // Fetch interval
+    refreshTimerRef.current = setInterval(() => {
+      fetchLiveData();
+      setNextRefreshIn(90);
+    }, REFRESH_INTERVAL);
+    
+    return () => {
+      clearInterval(timeInterval);
+      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+    };
+  }, [isAutoRefresh, isPaused, fetchLiveData]);
+
   // Processar rádios para exibição
   const processRadioStations = useCallback((): NowPlayingStation[] => {
     return radioStations
@@ -95,7 +164,6 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
         };
       })
       .sort((a, b) => {
-        // Priorizar rádios com "tocando agora"
         if (a.isLive && !b.isLive) return -1;
         if (!a.isLive && b.isLive) return 1;
         return 0;
@@ -105,13 +173,19 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
   const nowPlayingStations = processRadioStations();
   const activeCount = nowPlayingStations.filter(s => s.isLive).length;
   const matchedCount = nowPlayingStations.filter(s => s.matchedCurrent).length;
+  const totalSongs = nowPlayingStations.reduce((acc, s) => acc + s.lastSongs.length + (s.currentSong ? 1 : 0), 0);
+  const matchedTotal = nowPlayingStations.reduce((acc, s) => 
+    acc + s.matchedRecent.filter(Boolean).length + (s.matchedCurrent ? 1 : 0), 0
+  );
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
   const handleRefresh = () => {
-    setCurrentTime(new Date());
+    fetchLiveData();
+    setNextRefreshIn(90);
+    toast.info('Atualizando dados das rádios...');
   };
 
   return (
@@ -121,16 +195,33 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
           <CardTitle className="text-lg flex items-center gap-2">
             <Radio className="h-5 w-5 text-primary" />
             Rádios em Tempo Real
+            {isLoading && (
+              <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />
+            )}
           </CardTitle>
           <div className="flex items-center gap-3">
+            {/* Status da API */}
+            <div className="flex items-center gap-1">
+              {apiStatus === 'success' ? (
+                <Wifi className="h-4 w-4 text-broadcast-green" />
+              ) : apiStatus === 'error' ? (
+                <WifiOff className="h-4 w-4 text-destructive" />
+              ) : (
+                <Wifi className="h-4 w-4 text-muted-foreground" />
+              )}
+            </div>
+            
             {/* Status */}
             <div className="flex items-center gap-2">
               <Badge variant="outline" className="text-xs gap-1">
-                <span className="w-2 h-2 rounded-full bg-broadcast-green animate-pulse"></span>
+                <span className={cn(
+                  "w-2 h-2 rounded-full",
+                  activeCount > 0 ? "bg-broadcast-green animate-pulse" : "bg-muted-foreground"
+                )}></span>
                 {activeCount} ao vivo
               </Badge>
               <Badge variant="secondary" className="text-xs">
-                {matchedCount}/{activeCount} no acervo
+                {matchedTotal}/{totalSongs} no acervo
               </Badge>
             </div>
             
@@ -140,13 +231,22 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
               {formatTime(currentTime)}
             </div>
             
+            {/* Countdown */}
+            {isAutoRefresh && !isPaused && (
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Progress value={(nextRefreshIn / 90) * 100} className="w-16 h-1.5" />
+                <span>{nextRefreshIn}s</span>
+              </div>
+            )}
+            
             {/* Controles */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
                 onClick={() => setIsPaused(!isPaused)}
+                title={isPaused ? 'Retomar' : 'Pausar'}
               >
                 {isPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
               </Button>
@@ -155,8 +255,10 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
                 size="icon"
                 className="h-7 w-7"
                 onClick={handleRefresh}
+                disabled={isLoading}
+                title="Atualizar agora"
               >
-                <RefreshCw className="h-3 w-3" />
+                <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
               </Button>
             </div>
             
@@ -167,7 +269,7 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
                 checked={isAutoRefresh}
                 onCheckedChange={setIsAutoRefresh}
               />
-              <Label htmlFor="auto-refresh" className="text-xs">Auto</Label>
+              <Label htmlFor="auto-refresh" className="text-xs">Auto 90s</Label>
             </div>
           </div>
         </div>
@@ -180,6 +282,10 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
             <p className="text-xs text-muted-foreground mt-1">
               Importe o arquivo radio_historico.json na aba Configurações
             </p>
+            <Button size="sm" className="mt-3 gap-1" onClick={handleRefresh}>
+              <RefreshCw className="h-3 w-3" />
+              Buscar via API
+            </Button>
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -230,7 +336,7 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
                     ) : (
                       <div className="flex items-center gap-1 text-destructive">
                         <AlertCircle className="h-3 w-3" />
-                        <span className="text-[10px]">Não encontrada → será substituída por <span className="font-mono">mus</span></span>
+                        <span className="text-[10px]">Não encontrada → <span className="font-mono">mus</span></span>
                       </div>
                     )}
                   </div>
@@ -240,11 +346,13 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
                   </div>
                 )}
 
-                {/* Últimas tocadas */}
+                {/* Últimas 5 tocadas */}
                 {item.lastSongs.length > 0 && (
                   <div className="space-y-1">
-                    <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Anteriores</span>
-                    <ScrollArea className="h-[100px]">
+                    <span className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                      Últimas {item.lastSongs.length} tocadas
+                    </span>
+                    <ScrollArea className="h-[120px]">
                       <div className="space-y-1">
                         {item.lastSongs.map((song, idx) => {
                           const matched = item.matchedRecent[idx];
@@ -252,7 +360,7 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
                             <div
                               key={idx}
                               className={cn(
-                                "flex items-center gap-2 p-1.5 rounded text-xs",
+                                "flex items-center gap-2 p-2 rounded text-xs",
                                 matched ? "bg-broadcast-green/10" : "bg-destructive/10"
                               )}
                             >
@@ -261,7 +369,17 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
                               ) : (
                                 <AlertCircle className="h-3 w-3 text-destructive shrink-0" />
                               )}
-                              <span className="truncate flex-1" title={song}>{song}</span>
+                              <div className="flex-1 min-w-0">
+                                <span className="truncate block" title={song}>{song}</span>
+                                {matched && (
+                                  <span className="text-[10px] text-broadcast-green truncate block">
+                                    → "{matched}"
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[10px] text-muted-foreground shrink-0">
+                                {(idx + 1) * 3}m
+                              </span>
                             </div>
                           );
                         })}
@@ -284,20 +402,27 @@ export function TimelineView({ slots, day, musicLibrary, radioStations = [], onS
           </div>
         )}
 
-        {/* Legenda */}
-        <div className="flex items-center justify-center gap-6 mt-4 pt-3 border-t border-border/50">
-          <div className="flex items-center gap-2 text-xs">
-            <Music className="h-3 w-3 text-broadcast-green" />
-            <span className="text-muted-foreground">Encontrada no acervo</span>
+        {/* Legenda e última atualização */}
+        <div className="flex items-center justify-between mt-4 pt-3 border-t border-border/50">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-xs">
+              <Music className="h-3 w-3 text-broadcast-green" />
+              <span className="text-muted-foreground">No acervo</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <AlertCircle className="h-3 w-3 text-destructive" />
+              <span className="text-muted-foreground">Não encontrada</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <Disc className="h-3 w-3 text-primary" />
+              <span className="text-muted-foreground">Ao vivo</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-xs">
-            <AlertCircle className="h-3 w-3 text-destructive" />
-            <span className="text-muted-foreground">Não encontrada → <span className="font-mono">mus</span></span>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <Disc className="h-3 w-3 text-primary" />
-            <span className="text-muted-foreground">Transmissão ao vivo</span>
-          </div>
+          {lastFetch && (
+            <span className="text-[10px] text-muted-foreground">
+              Última atualização: {formatTime(lastFetch)}
+            </span>
+          )}
         </div>
       </CardContent>
     </Card>
