@@ -67,7 +67,7 @@ export function RealTimeCapture({
   const [isCapturing, setIsCapturing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [historyFolder, setHistoryFolder] = useState<FileSystemDirectoryHandle | null>(null);
-  const [dataSource, setDataSource] = useState<'local' | 'database'>('local');
+  const [dataSource, setDataSource] = useState<'local' | 'database'>('database'); // Default to database
   const [lastCapture, setLastCapture] = useState<Date | null>(null);
   const [nextCaptureIn, setNextCaptureIn] = useState(30);
   const [stats, setStats] = useState({
@@ -292,11 +292,23 @@ export function RealTimeCapture({
     setTimeout(runCapture, 500);
   };
 
+  // Initial load - fetch from database on mount
+  useEffect(() => {
+    if (dataSource === 'database') {
+      runCapture();
+    }
+  }, []); // Run once on mount
+
   // Auto-capture timer
   useEffect(() => {
-    if (isPaused || (!historyFolder && dataSource === 'local')) {
+    if (isPaused) {
       if (captureTimerRef.current) clearInterval(captureTimerRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
+      return;
+    }
+
+    // Skip if local mode without folder
+    if (dataSource === 'local' && !historyFolder) {
       return;
     }
 
