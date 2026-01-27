@@ -1,9 +1,9 @@
 import { TimeSlot, SlotContent } from '@/types/radio';
 import { cn } from '@/lib/utils';
-import { Clock, Lock, Music, Radio, Volume2, Edit2, Plus, AlertCircle } from 'lucide-react';
+import { Clock, Lock, Music, Radio, Volume2, Edit2, Plus, AlertCircle, Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { normalizeText } from '@/lib/scheduleParser';
+import { normalizeText, isFixedContent } from '@/lib/scheduleParser';
 
 interface TimeSlotCardProps {
   slot: TimeSlot;
@@ -25,25 +25,31 @@ export function TimeSlotCard({ slot, musicLibrary = [], onEdit, onAddContent }: 
     );
   };
 
-  const getContentIcon = (type: SlotContent['type'], isValid: boolean = true) => {
-    switch (type) {
+  const getContentIcon = (item: SlotContent, isValid: boolean = true) => {
+    // Conteúdo fixo (HORAS, EDICAO, BLOCO, etc)
+    if (item.type === 'fixed' || isFixedContent(item.value)) {
+      return <Star className="h-3 w-3 text-broadcast-blue" />;
+    }
+    
+    switch (item.type) {
       case 'music':
         return <Music className={cn("h-3 w-3", isValid ? "text-broadcast-green" : "text-destructive")} />;
       case 'vht':
         return <Volume2 className="h-3 w-3 text-broadcast-yellow" />;
-      case 'fixed':
-        return <Radio className="h-3 w-3 text-broadcast-blue" />;
       case 'placeholder':
         return <Music className="h-3 w-3 text-muted-foreground" />;
+      default:
+        return <Music className="h-3 w-3" />;
     }
   };
 
   const getContentLabel = (item: SlotContent) => {
     if (item.type === 'vht') return 'VHT';
-    if (item.type === 'placeholder') return 'Música';
-    // Remove extension and limit size
+    if (item.type === 'placeholder') return 'mus';
+    
+    // Remove extensão e limita tamanho
     const name = item.value.replace(/\.mp3$/i, '');
-    return name.length > 35 ? name.substring(0, 35) + '...' : name;
+    return name.length > 30 ? name.substring(0, 30) + '...' : name;
   };
 
   const isEmptySlot = slot.isFixed && slot.content.length === 0;
@@ -96,26 +102,28 @@ export function TimeSlotCard({ slot, musicLibrary = [], onEdit, onAddContent }: 
           {slot.content.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {slot.content.map((item, idx) => {
-                const isValid = item.type !== 'music' || isMusicValid(item.value);
+                const isFixed = item.type === 'fixed' || isFixedContent(item.value);
+                const isValid = item.type !== 'music' || isFixed || isMusicValid(item.value);
+                
                 return (
                   <span
                     key={idx}
                     className={cn(
                       'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs',
                       'transition-colors cursor-pointer',
-                      item.type === 'music' && isValid && 'bg-broadcast-green/20 text-broadcast-green hover:bg-broadcast-green/30',
-                      item.type === 'music' && !isValid && 'bg-destructive/20 text-destructive hover:bg-destructive/30 border border-destructive/50',
+                      isFixed && 'bg-broadcast-blue/20 text-broadcast-blue hover:bg-broadcast-blue/30 font-medium',
+                      item.type === 'music' && !isFixed && isValid && 'bg-broadcast-green/20 text-broadcast-green hover:bg-broadcast-green/30',
+                      item.type === 'music' && !isFixed && !isValid && 'bg-destructive/20 text-destructive hover:bg-destructive/30 border border-destructive/50',
                       item.type === 'vht' && 'bg-broadcast-yellow/20 text-broadcast-yellow hover:bg-broadcast-yellow/30',
-                      item.type === 'fixed' && 'bg-broadcast-blue/20 text-broadcast-blue hover:bg-broadcast-blue/30',
                       item.type === 'placeholder' && 'bg-muted text-muted-foreground hover:bg-muted/80 border border-dashed border-muted-foreground'
                     )}
                     title={!isValid ? 'Arquivo não encontrado no acervo' : item.value}
                   >
-                    {getContentIcon(item.type, isValid)}
+                    {getContentIcon(item, isValid)}
                     <span className="truncate max-w-[150px]">
                       {getContentLabel(item)}
                     </span>
-                    {!isValid && <AlertCircle className="h-3 w-3 ml-1" />}
+                    {!isValid && !isFixed && <AlertCircle className="h-3 w-3 ml-1" />}
                   </span>
                 );
               })}
