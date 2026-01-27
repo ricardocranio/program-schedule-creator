@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { TimeSlot, RadioStation, DayOfWeek, SequenceItem } from '@/types/radio';
 import { useSchedule } from '@/hooks/useSchedule';
+import { useMissingTrackNotifications } from '@/hooks/useMissingTrackNotifications';
 import { Header } from '@/components/Header';
 import { DayTabs } from '@/components/DayTabs';
 import { ScheduleGrid } from '@/components/ScheduleGrid';
@@ -12,6 +13,7 @@ import { RadioStationManager } from '@/components/RadioStationManager';
 import { MusicLibraryManager } from '@/components/MusicLibraryManager';
 import { MusicDownloader } from '@/components/MusicDownloader';
 import { AutoSyncManager } from '@/components/AutoSyncManager';
+import { MissingTrackNotifications } from '@/components/MissingTrackNotifications';
 import { SlotEditorDialog } from '@/components/SlotEditorDialog';
 import { ImportExportDialog } from '@/components/ImportExportDialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -40,6 +42,21 @@ export default function Index() {
     generateEmptySchedule,
     saveStations,
   } = useSchedule();
+
+  // Missing track notifications
+  const {
+    missingTracks,
+    notificationsEnabled,
+    setNotificationsEnabled,
+    addMissingTrack,
+    markAsDownloading,
+    markAsCompleted,
+    dismissTrack,
+    clearAllNotifications,
+    fetchMissingTracks,
+  } = useMissingTrackNotifications({
+    musicLibrary,
+  });
 
   const [editingSlot, setEditingSlot] = useState<TimeSlot | null>(null);
   const [showImportExport, setShowImportExport] = useState<'import' | 'export' | null>(null);
@@ -177,13 +194,14 @@ export default function Index() {
                 radioStations={radioStations}
                 onSlotClick={handleEditSlot}
                 onUpdateStations={saveStations}
+                onMissingTrack={addMissingTrack}
               />
             </div>
           </TabsContent>
 
           {/* Tab Montagem */}
           <TabsContent value="montagem" className="mt-0">
-            <div className="grid lg:grid-cols-2 xl:grid-cols-5 gap-4">
+            <div className="grid lg:grid-cols-2 xl:grid-cols-6 gap-4">
               <SequenceConfig
                 radioStations={radioStations}
                 onSequenceChange={(seq) => gradeEngine.setSequence(seq)}
@@ -201,6 +219,15 @@ export default function Index() {
                 onUpdateStations={saveStations}
                 onExportSchedule={exportSchedule}
                 onUpdateSchedule={updateDaySchedule}
+              />
+              <MissingTrackNotifications
+                missingTracks={missingTracks}
+                notificationsEnabled={notificationsEnabled}
+                onToggleNotifications={setNotificationsEnabled}
+                onDownload={markAsDownloading}
+                onDismiss={dismissTrack}
+                onClearAll={clearAllNotifications}
+                onRefresh={fetchMissingTracks}
               />
               <MusicDownloader
                 missingTracks={radioStations.flatMap(s => 
