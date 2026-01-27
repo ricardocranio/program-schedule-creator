@@ -192,6 +192,7 @@ export function useSchedule() {
     addMusicFolder,
     removeMusicFolder,
     updateStationHistory,
+    saveStations,
     exportSchedule,
     clearSchedule,
     generateEmptySchedule,
