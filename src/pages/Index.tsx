@@ -176,6 +176,7 @@ export default function Index() {
                 musicLibrary={musicLibrary}
                 radioStations={radioStations}
                 onSlotClick={handleEditSlot}
+                onUpdateStations={saveStations}
               />
             </div>
           </TabsContent>
