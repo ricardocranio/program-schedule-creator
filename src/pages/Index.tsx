@@ -8,6 +8,7 @@ import { TimelineView } from '@/components/TimelineView';
 import { SequenceBuilder } from '@/components/SequenceBuilder';
 import { RadioStationManager } from '@/components/RadioStationManager';
 import { MusicLibraryManager } from '@/components/MusicLibraryManager';
+import { MusicDownloader } from '@/components/MusicDownloader';
 import { AutoSyncManager } from '@/components/AutoSyncManager';
 import { SlotEditorDialog } from '@/components/SlotEditorDialog';
 import { ImportExportDialog } from '@/components/ImportExportDialog';
@@ -166,17 +167,10 @@ export default function Index() {
 
           {/* Tab Montagem */}
           <TabsContent value="montagem" className="mt-0">
-            <div className="grid lg:grid-cols-3 gap-6">
+            <div className="grid lg:grid-cols-2 xl:grid-cols-4 gap-4">
               <SequenceBuilder
                 radioStations={radioStations.filter(s => s.enabled)}
                 onSequenceComplete={handleSequenceComplete}
-              />
-              <MusicLibraryManager
-                library={musicLibrary}
-                folders={musicFolders}
-                onUpdateLibrary={saveLibrary}
-                onAddFolder={addMusicFolder}
-                onRemoveFolder={removeMusicFolder}
               />
               <AutoSyncManager
                 schedule={schedule}
@@ -185,6 +179,22 @@ export default function Index() {
                 onUpdateStations={saveStations}
                 onExportSchedule={exportSchedule}
                 onUpdateSchedule={updateDaySchedule}
+              />
+              <MusicDownloader
+                missingTracks={radioStations.flatMap(s => 
+                  (s.ultimasTocadas || []).map(song => {
+                    const parts = song.includes(' - ') ? song.split(' - ') : ['', song];
+                    return { artist: parts[0]?.trim() || '', title: parts[1]?.trim() || song };
+                  })
+                )}
+                musicLibrary={musicLibrary}
+              />
+              <MusicLibraryManager
+                library={musicLibrary}
+                folders={musicFolders}
+                onUpdateLibrary={saveLibrary}
+                onAddFolder={addMusicFolder}
+                onRemoveFolder={removeMusicFolder}
               />
             </div>
           </TabsContent>
