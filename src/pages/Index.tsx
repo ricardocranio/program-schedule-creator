@@ -8,11 +8,12 @@ import { TimelineView } from '@/components/TimelineView';
 import { SequenceBuilder } from '@/components/SequenceBuilder';
 import { RadioStationManager } from '@/components/RadioStationManager';
 import { MusicLibraryManager } from '@/components/MusicLibraryManager';
+import { AutoSyncManager } from '@/components/AutoSyncManager';
 import { SlotEditorDialog } from '@/components/SlotEditorDialog';
 import { ImportExportDialog } from '@/components/ImportExportDialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Calendar, Layers, Radio as RadioIcon, Settings, Database, LayoutGrid, Clock } from 'lucide-react';
+import { Calendar, Layers, Radio as RadioIcon, Settings, Database, LayoutGrid, Clock, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function Index() {
@@ -32,6 +33,7 @@ export default function Index() {
     removeMusicFolder,
     exportSchedule,
     generateEmptySchedule,
+    saveStations,
   } = useSchedule();
 
   const [editingSlot, setEditingSlot] = useState<TimeSlot | null>(null);
@@ -162,20 +164,25 @@ export default function Index() {
 
           {/* Tab Montagem */}
           <TabsContent value="montagem" className="mt-0">
-            <div className="grid md:grid-cols-2 gap-6">
+            <div className="grid lg:grid-cols-3 gap-6">
               <SequenceBuilder
                 radioStations={radioStations.filter(s => s.enabled)}
                 onSequenceComplete={handleSequenceComplete}
               />
-              <div className="space-y-4">
-                <MusicLibraryManager
-                  library={musicLibrary}
-                  folders={musicFolders}
-                  onUpdateLibrary={saveLibrary}
-                  onAddFolder={addMusicFolder}
-                  onRemoveFolder={removeMusicFolder}
-                />
-              </div>
+              <MusicLibraryManager
+                library={musicLibrary}
+                folders={musicFolders}
+                onUpdateLibrary={saveLibrary}
+                onAddFolder={addMusicFolder}
+                onRemoveFolder={removeMusicFolder}
+              />
+              <AutoSyncManager
+                schedule={schedule}
+                radioStations={radioStations}
+                musicLibrary={musicLibrary}
+                onUpdateStations={saveStations}
+                onExportSchedule={exportSchedule}
+              />
             </div>
           </TabsContent>
 
