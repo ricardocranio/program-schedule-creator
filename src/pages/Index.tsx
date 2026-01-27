@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { TimeSlot, RadioStation, DayOfWeek, SequenceItem } from '@/types/radio';
 import { useSchedule } from '@/hooks/useSchedule';
 import { useMissingTrackNotifications } from '@/hooks/useMissingTrackNotifications';
@@ -15,13 +15,17 @@ import { MusicDownloader } from '@/components/MusicDownloader';
 import { AutoSyncManager } from '@/components/AutoSyncManager';
 import { MissingTrackNotifications } from '@/components/MissingTrackNotifications';
 import { RealTimeCapture } from '@/components/RealTimeCapture';
+import { HistoryChart } from '@/components/HistoryChart';
 import { SlotEditorDialog } from '@/components/SlotEditorDialog';
 import { ImportExportDialog } from '@/components/ImportExportDialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Calendar, Layers, Radio as RadioIcon, Settings, Database, LayoutGrid, Clock, RefreshCw } from 'lucide-react';
+import { Calendar, Layers, Radio as RadioIcon, Settings, Database, LayoutGrid, Clock, RefreshCw, BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
 import { gradeEngine, SequenceSlot } from '@/lib/gradeEngine';
+
+const ACTIVE_TAB_KEY = 'radiograde_active_tab';
+const VIEW_MODE_KEY = 'radiograde_view_mode';
 
 export default function Index() {
   const {
@@ -61,8 +65,23 @@ export default function Index() {
 
   const [editingSlot, setEditingSlot] = useState<TimeSlot | null>(null);
   const [showImportExport, setShowImportExport] = useState<'import' | 'export' | null>(null);
-  const [activeTab, setActiveTab] = useState('grade');
-  const [viewMode, setViewMode] = useState<'grid' | 'timeline'>('grid');
+  
+  // Persist active tab and view mode
+  const [activeTab, setActiveTab] = useState(() => {
+    return localStorage.getItem(ACTIVE_TAB_KEY) || 'grade';
+  });
+  const [viewMode, setViewMode] = useState<'grid' | 'timeline'>(() => {
+    return (localStorage.getItem(VIEW_MODE_KEY) as 'grid' | 'timeline') || 'grid';
+  });
+
+  // Auto-save tab and view mode
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    localStorage.setItem(VIEW_MODE_KEY, viewMode);
+  }, [viewMode]);
 
   const currentSlots = schedule[selectedDay] || [];
 
@@ -264,7 +283,7 @@ export default function Index() {
 
           {/* Tab Config */}
           <TabsContent value="config" className="mt-0">
-            <div className="grid md:grid-cols-2 gap-6">
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
               <RadioStationManager
                 stations={radioStations}
                 onAdd={addRadioStation}
@@ -278,6 +297,7 @@ export default function Index() {
                 onAddFolder={addMusicFolder}
                 onRemoveFolder={removeMusicFolder}
               />
+              <HistoryChart musicLibrary={musicLibrary} />
             </div>
           </TabsContent>
         </Tabs>

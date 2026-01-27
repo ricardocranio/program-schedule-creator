@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { RadioStation } from '@/types/radio';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -6,7 +6,8 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Plus, Trash2, Radio, Edit2, Check, X, Music, ExternalLink, Search, Link, Copy } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
+import { Plus, Trash2, Radio, Edit2, Check, X, Music, ExternalLink, Search, Link, Copy, Loader2, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { toast } from 'sonner';
@@ -27,6 +28,8 @@ export function RadioStationManager({ stations, onAdd, onRemove, onUpdate }: Rad
   const [searchTerm, setSearchTerm] = useState('');
   const [editingUrlId, setEditingUrlId] = useState<string | null>(null);
   const [editUrl, setEditUrl] = useState('');
+  const [urlValidation, setUrlValidation] = useState<Record<string, 'valid' | 'invalid' | 'checking' | 'unknown'>>({});
+  const [isValidatingAll, setIsValidatingAll] = useState(false);
 
   const handleAdd = () => {
     if (!newName.trim()) return;
@@ -88,6 +91,64 @@ export function RadioStationManager({ stations, onAdd, onRemove, onUpdate }: Rad
       )
     : stations;
 
+  // Validate single URL
+  const validateUrl = useCallback(async (stationId: string, url: string) => {
+    if (!url) {
+      setUrlValidation(prev => ({ ...prev, [stationId]: 'unknown' }));
+      return;
+    }
+
+    setUrlValidation(prev => ({ ...prev, [stationId]: 'checking' }));
+
+    try {
+      // Use a simple approach - try to create an Image or fetch with no-cors
+      // Since we can't actually validate external URLs due to CORS, we check URL format
+      const urlObj = new URL(url);
+      const isValidFormat = ['http:', 'https:'].includes(urlObj.protocol);
+      
+      if (isValidFormat) {
+        // Mark as valid based on format (actual connectivity would require a proxy)
+        setUrlValidation(prev => ({ ...prev, [stationId]: 'valid' }));
+      } else {
+        setUrlValidation(prev => ({ ...prev, [stationId]: 'invalid' }));
+      }
+    } catch {
+      setUrlValidation(prev => ({ ...prev, [stationId]: 'invalid' }));
+    }
+  }, []);
+
+  // Validate all URLs
+  const validateAllUrls = async () => {
+    setIsValidatingAll(true);
+    const stationsWithUrls = stations.filter(s => s.url);
+    
+    for (const station of stationsWithUrls) {
+      await validateUrl(station.id, station.url!);
+      // Small delay to show progress
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
+    setIsValidatingAll(false);
+    
+    const validCount = Object.values(urlValidation).filter(v => v === 'valid').length;
+    toast.success(`Validação concluída: ${validCount}/${stationsWithUrls.length} URLs válidas`);
+  };
+
+  // Get validation icon
+  const getValidationIcon = (stationId: string) => {
+    const status = urlValidation[stationId];
+    switch (status) {
+      case 'checking':
+        return <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />;
+      case 'valid':
+        return <CheckCircle className="h-3 w-3 text-broadcast-green" />;
+      case 'invalid':
+        return <XCircle className="h-3 w-3 text-destructive" />;
+      default:
+        return <AlertCircle className="h-3 w-3 text-muted-foreground" />;
+    }
+  };
+
   return (
     <Card className="glass-card">
       <CardHeader className="pb-3">
@@ -131,6 +192,30 @@ export function RadioStationManager({ stations, onAdd, onRemove, onUpdate }: Rad
             onChange={(e) => setNewUrl(e.target.value)}
             className="text-xs"
           />
+        </div>
+
+        {/* Validate all button */}
+        <div className="flex items-center justify-between">
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-xs gap-1"
+            onClick={validateAllUrls}
+            disabled={isValidatingAll}
+          >
+            {isValidatingAll ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <CheckCircle className="h-3 w-3" />
+            )}
+            Validar Todas URLs
+          </Button>
+          {isValidatingAll && (
+            <Progress 
+              value={(Object.keys(urlValidation).length / stations.filter(s => s.url).length) * 100} 
+              className="w-20 h-2"
+            />
+          )}
         </div>
 
         {/* Stations list */}
@@ -258,6 +343,9 @@ export function RadioStationManager({ stations, onAdd, onRemove, onUpdate }: Rad
                           <div className="flex items-center gap-1">
                             {station.url ? (
                               <>
+                                <div className="flex items-center gap-1">
+                                  {getValidationIcon(station.id)}
+                                </div>
                                 <a 
                                   href={station.url} 
                                   target="_blank" 
@@ -266,7 +354,7 @@ export function RadioStationManager({ stations, onAdd, onRemove, onUpdate }: Rad
                                   title={station.url}
                                 >
                                   <ExternalLink className="h-3 w-3 shrink-0" />
-                                  {station.url.length > 35 ? station.url.slice(0, 35) + '...' : station.url}
+                                  {station.url.length > 30 ? station.url.slice(0, 30) + '...' : station.url}
                                 </a>
                                 <Button
                                   variant="ghost"
@@ -276,6 +364,15 @@ export function RadioStationManager({ stations, onAdd, onRemove, onUpdate }: Rad
                                   title="Copiar URL"
                                 >
                                   <Copy className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6"
+                                  onClick={() => validateUrl(station.id, station.url!)}
+                                  title="Validar URL"
+                                >
+                                  <CheckCircle className="h-3 w-3" />
                                 </Button>
                               </>
                             ) : (
