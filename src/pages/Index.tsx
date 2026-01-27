@@ -19,11 +19,14 @@ export default function Index() {
     setSelectedDay,
     radioStations,
     musicLibrary,
+    musicFolders,
     importScheduleFile,
     updateSlot,
     addRadioStation,
     removeRadioStation,
     saveLibrary,
+    addMusicFolder,
+    removeMusicFolder,
     exportSchedule,
     generateEmptySchedule,
   } = useSchedule();
@@ -111,7 +114,10 @@ export default function Index() {
               <div className="space-y-4">
                 <MusicLibraryManager
                   library={musicLibrary}
+                  folders={musicFolders}
                   onUpdateLibrary={saveLibrary}
+                  onAddFolder={addMusicFolder}
+                  onRemoveFolder={removeMusicFolder}
                 />
               </div>
             </div>
@@ -128,7 +134,10 @@ export default function Index() {
               />
               <MusicLibraryManager
                 library={musicLibrary}
+                folders={musicFolders}
                 onUpdateLibrary={saveLibrary}
+                onAddFolder={addMusicFolder}
+                onRemoveFolder={removeMusicFolder}
               />
             </div>
           </TabsContent>

@@ -16,7 +16,21 @@ export interface SlotContent {
 export interface RadioStation {
   id: string;
   name: string;
+  url?: string;
   enabled: boolean;
+  historico?: RadioHistoryEntry[];
+  tocandoAgora?: string;
+  ultimasTocadas?: string[];
+}
+
+export interface RadioHistoryEntry {
+  musica: string;
+  timestamp: string;
+}
+
+export interface MusicFolder {
+  path: string;
+  name: string;
 }
 
 export interface MusicFile {
