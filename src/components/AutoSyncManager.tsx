@@ -10,7 +10,6 @@ import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { 
   RefreshCw, 
-  Upload, 
   Download, 
   FolderOpen, 
   Clock, 
@@ -22,11 +21,13 @@ import {
   Save,
   Zap,
   FileText,
-  Replace
+  Replace,
+  Settings,
+  Activity
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { normalizeText, formatScheduleToText, findMusicInLibrary, formatMusicName, parseMusicFilename } from '@/lib/scheduleParser';
+import { normalizeText } from '@/lib/scheduleParser';
 
 interface AutoSyncManagerProps {
   schedule: ScheduleData;
@@ -55,6 +56,7 @@ interface CapturedSong {
 }
 
 const AUTO_SYNC_INTERVAL = 20 * 60 * 1000; // 20 minutes
+const HISTORY_CHECK_INTERVAL = 30 * 1000; // Check for new history every 30 seconds
 
 export function AutoSyncManager({
   schedule,
@@ -64,18 +66,23 @@ export function AutoSyncManager({
   onExportSchedule,
   onUpdateSchedule,
 }: AutoSyncManagerProps) {
+  const [autoSync, setAutoSync] = useState(true); // Auto sync enabled by default
   const [autoExport, setAutoExport] = useState(false);
+  const [autoReplace, setAutoReplace] = useState(true); // Auto replace enabled by default
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [nextSync, setNextSync] = useState<Date | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [matchResults, setMatchResults] = useState<MatchResult[]>([]);
   const [capturedSongs, setCapturedSongs] = useState<CapturedSong[]>([]);
   const [exportFolder, setExportFolder] = useState<FileSystemDirectoryHandle | null>(null);
+  const [historyFolder, setHistoryFolder] = useState<FileSystemDirectoryHandle | null>(null);
   const [progress, setProgress] = useState(0);
   const [replacedCount, setReplacedCount] = useState(0);
+  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [lastHistoryHash, setLastHistoryHash] = useState<string>('');
   
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const monitorRef = useRef<NodeJS.Timeout | null>(null);
 
   // Parse song text from radio history
   const parseSongText = (text: string): { title: string; artist: string } => {
@@ -130,112 +137,133 @@ export function AutoSyncManager({
     return null;
   }, [musicLibrary]);
 
-  // Import radio_historico.json
-  const handleImportHistory = async (file: File) => {
-    setIsProcessing(true);
-    setProgress(0);
+  // Process radio history JSON data
+  const processHistoryData = useCallback(async (data: any) => {
+    if (!data.radios) {
+      console.error('Formato inválido: campo "radios" não encontrado');
+      return;
+    }
+
+    const results: MatchResult[] = [];
+    const captured: CapturedSong[] = [];
+    const updatedStations: RadioStation[] = [...radioStations];
+    const radioEntries = Object.entries(data.radios);
     
-    try {
-      const content = await file.text();
-      const data = JSON.parse(content);
+    for (let i = 0; i < radioEntries.length; i++) {
+      const entry = radioEntries[i] as [string, any];
+      const uuid = entry[0];
+      const radioData = entry[1];
+      setProgress(Math.round((i / radioEntries.length) * 100));
       
-      if (!data.radios) {
-        toast.error('Formato inválido: campo "radios" não encontrado');
-        return;
-      }
+      const nome = radioData.nome?.trim();
+      if (!nome) continue;
 
-      const results: MatchResult[] = [];
-      const captured: CapturedSong[] = [];
-      const updatedStations: RadioStation[] = [...radioStations];
-      const radioEntries = Object.entries(data.radios);
-      
-      for (let i = 0; i < radioEntries.length; i++) {
-        const entry = radioEntries[i] as [string, any];
-        const uuid = entry[0];
-        const radioData = entry[1];
-        setProgress(Math.round((i / radioEntries.length) * 100));
-        
-        const nome = radioData.nome?.trim();
-        if (!nome) continue;
+      const stationIndex = updatedStations.findIndex(s => 
+        normalizeText(s.name.toLowerCase()) === normalizeText(nome.toLowerCase()) ||
+        s.name.toLowerCase().includes(nome.toLowerCase()) ||
+        nome.toLowerCase().includes(s.name.toLowerCase())
+      );
 
-        const stationIndex = updatedStations.findIndex(s => 
-          normalizeText(s.name.toLowerCase()) === normalizeText(nome.toLowerCase()) ||
-          s.name.toLowerCase().includes(nome.toLowerCase()) ||
-          nome.toLowerCase().includes(s.name.toLowerCase())
-        );
+      if (stationIndex >= 0) {
+        updatedStations[stationIndex] = {
+          ...updatedStations[stationIndex],
+          historico: radioData.historico_completo || [],
+          tocandoAgora: radioData.ultimo_dado?.tocando_agora || '',
+          ultimasTocadas: radioData.ultimo_dado?.ultimas_tocadas || [],
+        };
 
-        if (stationIndex >= 0) {
-          updatedStations[stationIndex] = {
-            ...updatedStations[stationIndex],
-            historico: radioData.historico_completo || [],
-            tocandoAgora: radioData.ultimo_dado?.tocando_agora || '',
-            ultimasTocadas: radioData.ultimo_dado?.ultimas_tocadas || [],
-          };
+        const allSongs = [
+          ...(radioData.historico_completo || []).map((h: any) => h.musica),
+          radioData.ultimo_dado?.tocando_agora,
+          ...(radioData.ultimo_dado?.ultimas_tocadas || []),
+        ].filter(Boolean);
 
-          const allSongs = [
-            ...(radioData.historico_completo || []).map((h: any) => h.musica),
-            radioData.ultimo_dado?.tocando_agora,
-            ...(radioData.ultimo_dado?.ultimas_tocadas || []),
-          ].filter(Boolean);
-
-          for (const song of allSongs) {
-            const { title, artist } = parseSongText(song);
-            const matched = findMatchInLibrary(title, artist);
+        for (const song of allSongs) {
+          const { title, artist } = parseSongText(song);
+          const matched = findMatchInLibrary(title, artist);
+          
+          if (!results.some(r => r.original === song)) {
+            results.push({
+              original: song,
+              matched,
+              title,
+              artist,
+              radioName: nome,
+            });
             
-            if (!results.some(r => r.original === song)) {
-              results.push({
-                original: song,
-                matched,
-                title,
+            // Add to captured songs for replacement
+            if (matched) {
+              captured.push({
                 artist,
+                title,
+                fullName: `${artist} - ${title}`,
+                matchedFile: matched,
                 radioName: nome,
+                timestamp: new Date().toISOString(),
               });
-              
-              // Add to captured songs for replacement
-              if (matched) {
-                captured.push({
-                  artist,
-                  title,
-                  fullName: `${artist} - ${title}`,
-                  matchedFile: matched,
-                  radioName: nome,
-                  timestamp: new Date().toISOString(),
-                });
-              }
             }
           }
         }
       }
+    }
 
-      onUpdateStations(updatedStations);
-      setMatchResults(results);
-      setCapturedSongs(captured);
-      setLastSync(new Date());
+    onUpdateStations(updatedStations);
+    setMatchResults(results);
+    setCapturedSongs(captured);
+    setLastSync(new Date());
+    setProgress(100);
+    
+    const matchedCount = results.filter(r => r.matched).length;
+    
+    return { results, captured, matchedCount };
+  }, [radioStations, findMatchInLibrary, onUpdateStations]);
+
+  // Check for radio_historico.json in selected folder
+  const checkForHistoryFile = useCallback(async () => {
+    if (!historyFolder) return;
+    
+    try {
+      const fileHandle = await historyFolder.getFileHandle('radio_historico.json');
+      const file = await fileHandle.getFile();
+      const content = await file.text();
       
-      const matchedCount = results.filter(r => r.matched).length;
-      toast.success(`Importado! ${matchedCount}/${results.length} músicas encontradas no acervo`);
+      // Create hash to check if file changed
+      const hash = btoa(content.slice(0, 500) + content.length);
       
+      if (hash !== lastHistoryHash) {
+        setLastHistoryHash(hash);
+        setIsProcessing(true);
+        
+        const data = JSON.parse(content);
+        const result = await processHistoryData(data);
+        
+        if (result) {
+          console.log(`[AutoSync] Importado: ${result.matchedCount}/${result.results.length} músicas`);
+          
+          // Auto replace if enabled
+          if (autoReplace && result.captured.length > 0) {
+            setTimeout(() => {
+              replacePlaceholdersAuto(result.captured);
+            }, 500);
+          }
+        }
+        
+        setIsProcessing(false);
+      }
     } catch (error) {
-      console.error('Erro ao importar:', error);
-      toast.error('Erro ao importar arquivo JSON');
-    } finally {
-      setIsProcessing(false);
-      setProgress(100);
+      // File doesn't exist yet, that's OK
+      if ((error as Error).name !== 'NotFoundError') {
+        console.error('[AutoSync] Erro ao verificar histórico:', error);
+      }
     }
-  };
+  }, [historyFolder, lastHistoryHash, processHistoryData, autoReplace]);
 
-  // Replace 'mus' placeholders with captured songs
-  const replacePlaceholders = useCallback(() => {
-    if (!onUpdateSchedule || capturedSongs.length === 0) {
-      toast.error('Nenhuma música capturada para substituição');
-      return;
-    }
+  // Auto replace placeholders
+  const replacePlaceholdersAuto = useCallback((songs: CapturedSong[]) => {
+    if (!onUpdateSchedule || songs.length === 0) return;
 
-    const matchedSongs = capturedSongs.filter(s => s.matchedFile);
-    if (matchedSongs.length === 0) {
-      toast.error('Nenhuma música do acervo encontrada nas capturas');
-      return;
-    }
+    const matchedSongs = songs.filter(s => s.matchedFile);
+    if (matchedSongs.length === 0) return;
 
     let totalReplaced = 0;
     const days: DayOfWeek[] = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];
@@ -247,7 +275,6 @@ export function AutoSyncManager({
       let songIndex = 0;
       const updatedSlots = slots.map(slot => {
         const updatedContent = slot.content.map(item => {
-          // Replace 'mus' placeholders with captured songs
           if ((item.type === 'placeholder' || item.value === 'mus') && songIndex < matchedSongs.length) {
             const song = matchedSongs[songIndex % matchedSongs.length];
             songIndex++;
@@ -270,19 +297,38 @@ export function AutoSyncManager({
       }
     });
 
-    setReplacedCount(totalReplaced);
-    toast.success(`${totalReplaced} placeholders substituídos por músicas do acervo!`);
-  }, [schedule, capturedSongs, onUpdateSchedule]);
+    if (totalReplaced > 0) {
+      setReplacedCount(prev => prev + totalReplaced);
+      toast.success(`${totalReplaced} placeholders substituídos automaticamente!`);
+    }
+  }, [schedule, onUpdateSchedule]);
 
-  // Select export folder
-  const handleSelectFolder = async () => {
+  // Replace placeholders manually
+  const replacePlaceholders = useCallback(() => {
+    if (!onUpdateSchedule || capturedSongs.length === 0) {
+      toast.error('Nenhuma música capturada para substituição');
+      return;
+    }
+
+    replacePlaceholdersAuto(capturedSongs);
+  }, [capturedSongs, onUpdateSchedule, replacePlaceholdersAuto]);
+
+  // Select history folder (where radio_historico.json lives)
+  const handleSelectHistoryFolder = async () => {
     try {
       // @ts-ignore - File System Access API
       const dirHandle = await window.showDirectoryPicker({
-        mode: 'readwrite',
+        mode: 'read',
       });
-      setExportFolder(dirHandle);
-      toast.success(`Pasta selecionada: ${dirHandle.name}`);
+      setHistoryFolder(dirHandle);
+      setIsMonitoring(true);
+      toast.success(`Monitorando: ${dirHandle.name}/radio_historico.json`);
+      
+      // Save to localStorage for persistence
+      localStorage.setItem('radiograde_history_folder', dirHandle.name);
+      
+      // Check immediately
+      setTimeout(() => checkForHistoryFile(), 500);
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         toast.error('Erro ao selecionar pasta');
@@ -290,12 +336,27 @@ export function AutoSyncManager({
     }
   };
 
-  // Export schedule to file - formato correto
-  const exportScheduleToFile = useCallback(async (day: DayOfWeek) => {
-    if (!exportFolder) {
-      toast.error('Selecione uma pasta de destino primeiro');
-      return false;
+  // Select export folder
+  const handleSelectExportFolder = async () => {
+    try {
+      // @ts-ignore - File System Access API
+      const dirHandle = await window.showDirectoryPicker({
+        mode: 'readwrite',
+      });
+      setExportFolder(dirHandle);
+      toast.success(`Pasta de exportação: ${dirHandle.name}`);
+      
+      localStorage.setItem('radiograde_export_folder', dirHandle.name);
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') {
+        toast.error('Erro ao selecionar pasta');
+      }
     }
+  };
+
+  // Export schedule to file
+  const exportScheduleToFile = useCallback(async (day: DayOfWeek) => {
+    if (!exportFolder) return false;
 
     try {
       const content = onExportSchedule(day);
@@ -355,7 +416,7 @@ export function AutoSyncManager({
     toast.success(`${day}.txt baixado!`);
   }, [onExportSchedule]);
 
-  // Download all days as zip-like (individual files)
+  // Download all days
   const downloadAllDays = useCallback(() => {
     const days: DayOfWeek[] = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];
     
@@ -365,6 +426,25 @@ export function AutoSyncManager({
       }
     });
   }, [schedule, downloadDay]);
+
+  // Monitor history file for changes
+  useEffect(() => {
+    if (isMonitoring && historyFolder && autoSync) {
+      // Check immediately
+      checkForHistoryFile();
+      
+      // Set up interval
+      monitorRef.current = setInterval(() => {
+        checkForHistoryFile();
+      }, HISTORY_CHECK_INTERVAL);
+
+      return () => {
+        if (monitorRef.current) {
+          clearInterval(monitorRef.current);
+        }
+      };
+    }
+  }, [isMonitoring, historyFolder, autoSync, checkForHistoryFile]);
 
   // Auto export timer
   useEffect(() => {
@@ -405,65 +485,110 @@ export function AutoSyncManager({
     <Card className="glass-card">
       <CardHeader className="pb-3">
         <CardTitle className="text-lg flex items-center gap-2">
-          <RefreshCw className={cn("h-5 w-5 text-primary", isProcessing && "animate-spin")} />
-          Sincronização e Download
+          <Activity className={cn("h-5 w-5 text-primary", isMonitoring && "animate-pulse")} />
+          Sincronização Automática
+          {isMonitoring && (
+            <Badge variant="default" className="ml-2 gap-1">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              </span>
+              Ativo
+            </Badge>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Import radio_historico.json */}
-        <div className="space-y-2">
-          <Label className="flex items-center gap-2">
-            <FileJson className="h-4 w-4" />
-            Importar Histórico de Rádios
-          </Label>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleImportHistory(file);
-            }}
-          />
-          <Button
-            variant="outline"
-            className="w-full gap-2"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isProcessing}
-          >
-            <Upload className="h-4 w-4" />
-            Selecionar radio_historico.json
-          </Button>
+        {/* Auto Import Section */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="flex items-center gap-2">
+              <FileJson className="h-4 w-4" />
+              Pasta do radio_historico.json
+            </Label>
+            {historyFolder && (
+              <Badge variant="outline" className="gap-1">
+                <FolderOpen className="h-3 w-3" />
+                {historyFolder.name}
+              </Badge>
+            )}
+          </div>
+          
+          {!historyFolder ? (
+            <Button
+              variant="default"
+              className="w-full gap-2"
+              onClick={handleSelectHistoryFolder}
+            >
+              <FolderOpen className="h-4 w-4" />
+              Selecionar Pasta (único passo necessário)
+            </Button>
+          ) : (
+            <div className="p-3 rounded-lg bg-broadcast-green/10 border border-broadcast-green/30">
+              <div className="flex items-center gap-2 text-sm text-broadcast-green">
+                <CheckCircle className="h-4 w-4" />
+                <span>Monitoramento automático ativo</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                O arquivo radio_historico.json será importado automaticamente quando detectado/atualizado.
+              </p>
+            </div>
+          )}
+
           {isProcessing && (
             <Progress value={progress} className="h-2" />
           )}
         </div>
 
-        {/* Replace placeholders button */}
+        {/* Auto settings */}
+        <div className="space-y-2 p-3 rounded-lg bg-secondary/30">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm">Importar automaticamente</span>
+            </div>
+            <Switch
+              checked={autoSync}
+              onCheckedChange={setAutoSync}
+              disabled={!historyFolder}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Replace className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm">Substituir "mus" automaticamente</span>
+            </div>
+            <Switch
+              checked={autoReplace}
+              onCheckedChange={setAutoReplace}
+            />
+          </div>
+        </div>
+
+        {/* Status */}
         {capturedSongs.length > 0 && (
           <div className="p-3 rounded-lg bg-primary/10 border border-primary/30 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Replace className="h-4 w-4 text-primary" />
+                <Music className="h-4 w-4 text-primary" />
                 <span className="text-sm font-medium">Músicas Capturadas</span>
               </div>
               <Badge variant="secondary">{capturedSongs.filter(s => s.matchedFile).length} no acervo</Badge>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Substitui todos os <code className="bg-muted px-1 rounded">mus</code> da grade pelas músicas capturadas das rádios
-            </p>
-            <Button
-              onClick={replacePlaceholders}
-              className="w-full gap-2"
-              variant="default"
-            >
-              <Zap className="h-4 w-4" />
-              Substituir Placeholders (mus) por Músicas
-            </Button>
+            {!autoReplace && (
+              <Button
+                onClick={replacePlaceholders}
+                className="w-full gap-2"
+                variant="default"
+                size="sm"
+              >
+                <Zap className="h-4 w-4" />
+                Substituir Placeholders Agora
+              </Button>
+            )}
             {replacedCount > 0 && (
               <p className="text-xs text-broadcast-green text-center">
-                ✓ {replacedCount} placeholders substituídos
+                ✓ {replacedCount} placeholders substituídos automaticamente
               </p>
             )}
           </div>
@@ -489,10 +614,10 @@ export function AutoSyncManager({
             <Button
               variant="outline"
               className="gap-2"
-              onClick={handleSelectFolder}
+              onClick={handleSelectExportFolder}
             >
               <FolderOpen className="h-4 w-4" />
-              {exportFolder ? `📁 ${exportFolder.name}` : 'Selecionar Pasta'}
+              {exportFolder ? `📁 ${exportFolder.name}` : 'Pasta Destino'}
             </Button>
           </div>
         </div>
@@ -516,7 +641,7 @@ export function AutoSyncManager({
         {/* Status */}
         {autoExport && nextSync && (
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Próxima sincronização:</span>
+            <span className="text-muted-foreground">Próxima exportação:</span>
             <Badge variant="secondary" className="gap-1">
               <Clock className="h-3 w-3" />
               {getTimeRemaining()}
@@ -531,15 +656,17 @@ export function AutoSyncManager({
           </div>
         )}
 
-        {/* Manual export */}
-        <Button
-          className="w-full gap-2"
-          onClick={exportAllDays}
-          disabled={!exportFolder || isProcessing}
-        >
-          <Save className="h-4 w-4" />
-          Salvar Todas as Grades na Pasta
-        </Button>
+        {/* Save to folder button */}
+        {exportFolder && (
+          <Button
+            className="w-full gap-2"
+            onClick={exportAllDays}
+            disabled={isProcessing}
+          >
+            <Save className="h-4 w-4" />
+            Salvar Grades em {exportFolder.name}
+          </Button>
+        )}
 
         {/* Match results */}
         {matchResults.length > 0 && (
@@ -553,7 +680,7 @@ export function AutoSyncManager({
                 {matchedCount}/{matchResults.length} no acervo
               </Badge>
             </div>
-            <ScrollArea className="h-[180px] border rounded-lg p-2">
+            <ScrollArea className="h-[150px] border rounded-lg p-2">
               <div className="space-y-1">
                 {matchResults.slice(0, 50).map((result, idx) => (
                   <div
@@ -582,7 +709,7 @@ export function AutoSyncManager({
                         </div>
                       ) : (
                         <div className="text-destructive">
-                          → Será <span className="font-mono">mus</span> (placeholder)
+                          → Será <span className="font-mono">mus</span>
                         </div>
                       )}
                     </div>
