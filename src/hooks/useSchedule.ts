@@ -1,10 +1,23 @@
 import { useState, useCallback } from 'react';
-import { TimeSlot, DayOfWeek, ScheduleData, SlotContent, RadioStation } from '@/types/radio';
+import { TimeSlot, DayOfWeek, ScheduleData, SlotContent, RadioStation, MusicFolder } from '@/types/radio';
 import { parseScheduleFile, formatScheduleToText } from '@/lib/scheduleParser';
 
 const STORAGE_KEY = 'radio_schedule_data';
 const STATIONS_KEY = 'radio_stations';
 const LIBRARY_KEY = 'music_library';
+const FOLDERS_KEY = 'music_folders';
+
+// Default radio stations from radio_monitor_supabase.py
+const DEFAULT_STATIONS: RadioStation[] = [
+  { id: 'bh_fm', name: 'BH FM', url: 'https://mytuner-radio.com/pt/radio/radio-bh-fm-402270', enabled: true },
+  { id: 'band_fm', name: 'Band FM', url: 'https://mytuner-radio.com/pt/radio/band-fm-413397/', enabled: true },
+  { id: 'clube_fm', name: 'Clube FM', url: 'https://mytuner-radio.com/pt/radio/radio-clube-fm-brasilia-1055-406812/', enabled: true },
+  { id: 'globo_fm', name: 'Globo Fm', url: 'https://mytuner-radio.com/pt/radio/radio-globo-rj-402262/', enabled: true },
+  { id: 'blink_102', name: 'Blink 102 FM', url: 'https://mytuner-radio.com/pt/radio/radio-blink-102-fm-407711/', enabled: true },
+  { id: 'positiva_fm', name: 'Positiva FM', url: 'https://mytuner-radio.com/pt/radio/positiva-fm-421607/', enabled: true },
+  { id: 'liberdade_fm', name: 'Liberdade FM', url: 'https://mytuner-radio.com/pt/radio/radio-liberdade-fm-929-395273/', enabled: true },
+  { id: 'mix_fm', name: 'Mix FM', url: 'https://mytuner-radio.com/pt/radio/mix-fm-sao-paulo-408793/', enabled: true },
+];
 
 export function useSchedule() {
   const [schedule, setSchedule] = useState<ScheduleData>(() => {
@@ -14,6 +27,15 @@ export function useSchedule() {
 
   const [radioStations, setRadioStations] = useState<RadioStation[]>(() => {
     const saved = localStorage.getItem(STATIONS_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return parsed.length > 0 ? parsed : DEFAULT_STATIONS;
+    }
+    return DEFAULT_STATIONS;
+  });
+
+  const [musicFolders, setMusicFolders] = useState<MusicFolder[]>(() => {
+    const saved = localStorage.getItem(FOLDERS_KEY);
     return saved ? JSON.parse(saved) : [];
   });
 
@@ -40,6 +62,30 @@ export function useSchedule() {
     localStorage.setItem(LIBRARY_KEY, JSON.stringify(library));
     setMusicLibrary(library);
   }, []);
+
+  const saveFolders = useCallback((folders: MusicFolder[]) => {
+    localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+    setMusicFolders(folders);
+  }, []);
+
+  const addMusicFolder = useCallback((folder: MusicFolder) => {
+    const newFolders = [...musicFolders, folder];
+    saveFolders(newFolders);
+  }, [musicFolders, saveFolders]);
+
+  const removeMusicFolder = useCallback((path: string) => {
+    saveFolders(musicFolders.filter(f => f.path !== path));
+  }, [musicFolders, saveFolders]);
+
+  // Update station with history data
+  const updateStationHistory = useCallback((stationId: string, historico: any[], tocandoAgora?: string, ultimasTocadas?: string[]) => {
+    const updatedStations = radioStations.map(s => 
+      s.id === stationId 
+        ? { ...s, historico, tocandoAgora, ultimasTocadas }
+        : s
+    );
+    saveStations(updatedStations);
+  }, [radioStations, saveStations]);
 
   // Importar arquivo de grade
   const importScheduleFile = useCallback(async (file: File, day: DayOfWeek) => {
@@ -134,6 +180,7 @@ export function useSchedule() {
     setSelectedDay,
     radioStations,
     musicLibrary,
+    musicFolders,
     isLoading,
     importScheduleFile,
     updateSlot,
@@ -141,6 +188,10 @@ export function useSchedule() {
     addRadioStation,
     removeRadioStation,
     saveLibrary,
+    saveFolders,
+    addMusicFolder,
+    removeMusicFolder,
+    updateStationHistory,
     exportSchedule,
     clearSchedule,
     generateEmptySchedule,
