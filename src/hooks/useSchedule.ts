@@ -157,6 +157,11 @@ export function useSchedule() {
     }
   }, [schedule, saveSchedule]);
 
+  // Atualizar grade completa de um dia
+  const updateDaySchedule = useCallback((day: DayOfWeek, slots: TimeSlot[]) => {
+    saveSchedule({ ...schedule, [day]: slots });
+  }, [schedule, saveSchedule]);
+
   // Gerar grade vazia com todos os horários
   const generateEmptySchedule = useCallback((day: DayOfWeek) => {
     const slots: TimeSlot[] = [];
@@ -185,6 +190,7 @@ export function useSchedule() {
     importScheduleFile,
     updateSlot,
     updateSlotContent,
+    updateDaySchedule,
     addRadioStation,
     removeRadioStation,
     saveLibrary,

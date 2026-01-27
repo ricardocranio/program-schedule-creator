@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { RadioStation, DayOfWeek, ScheduleData, DAY_NAMES } from '@/types/radio';
+import { RadioStation, DayOfWeek, ScheduleData, DAY_NAMES, TimeSlot, SlotContent } from '@/types/radio';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Progress } from '@/components/ui/progress';
+import { Separator } from '@/components/ui/separator';
 import { 
   RefreshCw, 
   Upload, 
@@ -18,11 +19,14 @@ import {
   Music,
   Radio,
   FileJson,
-  Save
+  Save,
+  Zap,
+  FileText,
+  Replace
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { normalizeText, formatScheduleToText } from '@/lib/scheduleParser';
+import { normalizeText, formatScheduleToText, findMusicInLibrary, formatMusicName, parseMusicFilename } from '@/lib/scheduleParser';
 
 interface AutoSyncManagerProps {
   schedule: ScheduleData;
@@ -30,6 +34,7 @@ interface AutoSyncManagerProps {
   musicLibrary: string[];
   onUpdateStations: (stations: RadioStation[]) => void;
   onExportSchedule: (day: DayOfWeek) => string;
+  onUpdateSchedule?: (day: DayOfWeek, slots: TimeSlot[]) => void;
 }
 
 interface MatchResult {
@@ -37,10 +42,19 @@ interface MatchResult {
   matched: string | null;
   artist: string;
   title: string;
+  radioName?: string;
+}
+
+interface CapturedSong {
+  artist: string;
+  title: string;
+  fullName: string;
+  matchedFile: string | null;
+  radioName: string;
+  timestamp: string;
 }
 
 const AUTO_SYNC_INTERVAL = 20 * 60 * 1000; // 20 minutes
-const EXPORT_FOLDER_KEY = 'radio_export_folder';
 
 export function AutoSyncManager({
   schedule,
@@ -48,14 +62,17 @@ export function AutoSyncManager({
   musicLibrary,
   onUpdateStations,
   onExportSchedule,
+  onUpdateSchedule,
 }: AutoSyncManagerProps) {
   const [autoExport, setAutoExport] = useState(false);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [nextSync, setNextSync] = useState<Date | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [matchResults, setMatchResults] = useState<MatchResult[]>([]);
+  const [capturedSongs, setCapturedSongs] = useState<CapturedSong[]>([]);
   const [exportFolder, setExportFolder] = useState<FileSystemDirectoryHandle | null>(null);
   const [progress, setProgress] = useState(0);
+  const [replacedCount, setReplacedCount] = useState(0);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -64,12 +81,10 @@ export function AutoSyncManager({
   const parseSongText = (text: string): { title: string; artist: string } => {
     if (!text) return { title: '', artist: '' };
     
-    // Clean text
     let cleaned = text.trim();
     cleaned = cleaned.replace(/\s*\d+\s*(min|sec|seg|hour|hora)s?\s*(ago|atrás)?\s*$/i, '');
     cleaned = cleaned.replace(/\s*LIVE\s*$/i, '');
     
-    // Try different formats
     if (cleaned.includes('\n\n')) {
       const parts = cleaned.split('\n\n');
       return { title: parts[0].trim(), artist: parts[1]?.trim() || '' };
@@ -90,13 +105,11 @@ export function AutoSyncManager({
     
     const normalizedTitle = normalizeText(title.toLowerCase());
     const normalizedArtist = normalizeText(artist.toLowerCase());
-    const combined = `${normalizedTitle} ${normalizedArtist}`.trim();
     
     // Try exact match first
     for (const file of musicLibrary) {
       const normalizedFile = normalizeText(file.toLowerCase().replace(/\.mp3$/i, ''));
       
-      // Check if file contains both title and artist
       if (normalizedFile.includes(normalizedTitle) && 
           (normalizedArtist === '' || normalizedFile.includes(normalizedArtist))) {
         return file;
@@ -106,8 +119,6 @@ export function AutoSyncManager({
     // Try partial match
     for (const file of musicLibrary) {
       const normalizedFile = normalizeText(file.toLowerCase().replace(/\.mp3$/i, ''));
-      
-      // Check for significant overlap
       const titleWords = normalizedTitle.split(/\s+/).filter(w => w.length > 2);
       const matchedWords = titleWords.filter(word => normalizedFile.includes(word));
       
@@ -134,6 +145,7 @@ export function AutoSyncManager({
       }
 
       const results: MatchResult[] = [];
+      const captured: CapturedSong[] = [];
       const updatedStations: RadioStation[] = [...radioStations];
       const radioEntries = Object.entries(data.radios);
       
@@ -146,7 +158,6 @@ export function AutoSyncManager({
         const nome = radioData.nome?.trim();
         if (!nome) continue;
 
-        // Find matching station
         const stationIndex = updatedStations.findIndex(s => 
           normalizeText(s.name.toLowerCase()) === normalizeText(nome.toLowerCase()) ||
           s.name.toLowerCase().includes(nome.toLowerCase()) ||
@@ -154,7 +165,6 @@ export function AutoSyncManager({
         );
 
         if (stationIndex >= 0) {
-          // Update station with history
           updatedStations[stationIndex] = {
             ...updatedStations[stationIndex],
             historico: radioData.historico_completo || [],
@@ -162,7 +172,6 @@ export function AutoSyncManager({
             ultimasTocadas: radioData.ultimo_dado?.ultimas_tocadas || [],
           };
 
-          // Process songs for matching
           const allSongs = [
             ...(radioData.historico_completo || []).map((h: any) => h.musica),
             radioData.ultimo_dado?.tocando_agora,
@@ -173,14 +182,26 @@ export function AutoSyncManager({
             const { title, artist } = parseSongText(song);
             const matched = findMatchInLibrary(title, artist);
             
-            // Avoid duplicates
             if (!results.some(r => r.original === song)) {
               results.push({
                 original: song,
                 matched,
                 title,
                 artist,
+                radioName: nome,
               });
+              
+              // Add to captured songs for replacement
+              if (matched) {
+                captured.push({
+                  artist,
+                  title,
+                  fullName: `${artist} - ${title}`,
+                  matchedFile: matched,
+                  radioName: nome,
+                  timestamp: new Date().toISOString(),
+                });
+              }
             }
           }
         }
@@ -188,6 +209,7 @@ export function AutoSyncManager({
 
       onUpdateStations(updatedStations);
       setMatchResults(results);
+      setCapturedSongs(captured);
       setLastSync(new Date());
       
       const matchedCount = results.filter(r => r.matched).length;
@@ -201,6 +223,56 @@ export function AutoSyncManager({
       setProgress(100);
     }
   };
+
+  // Replace 'mus' placeholders with captured songs
+  const replacePlaceholders = useCallback(() => {
+    if (!onUpdateSchedule || capturedSongs.length === 0) {
+      toast.error('Nenhuma música capturada para substituição');
+      return;
+    }
+
+    const matchedSongs = capturedSongs.filter(s => s.matchedFile);
+    if (matchedSongs.length === 0) {
+      toast.error('Nenhuma música do acervo encontrada nas capturas');
+      return;
+    }
+
+    let totalReplaced = 0;
+    const days: DayOfWeek[] = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];
+    
+    days.forEach(day => {
+      const slots = schedule[day];
+      if (!slots) return;
+
+      let songIndex = 0;
+      const updatedSlots = slots.map(slot => {
+        const updatedContent = slot.content.map(item => {
+          // Replace 'mus' placeholders with captured songs
+          if ((item.type === 'placeholder' || item.value === 'mus') && songIndex < matchedSongs.length) {
+            const song = matchedSongs[songIndex % matchedSongs.length];
+            songIndex++;
+            totalReplaced++;
+            
+            return {
+              type: 'music' as const,
+              value: song.matchedFile!,
+              radioSource: song.radioName,
+            };
+          }
+          return item;
+        });
+
+        return { ...slot, content: updatedContent };
+      });
+
+      if (songIndex > 0) {
+        onUpdateSchedule(day, updatedSlots);
+      }
+    });
+
+    setReplacedCount(totalReplaced);
+    toast.success(`${totalReplaced} placeholders substituídos por músicas do acervo!`);
+  }, [schedule, capturedSongs, onUpdateSchedule]);
 
   // Select export folder
   const handleSelectFolder = async () => {
@@ -218,11 +290,11 @@ export function AutoSyncManager({
     }
   };
 
-  // Export schedule to file
+  // Export schedule to file - formato correto
   const exportScheduleToFile = useCallback(async (day: DayOfWeek) => {
     if (!exportFolder) {
       toast.error('Selecione uma pasta de destino primeiro');
-      return;
+      return false;
     }
 
     try {
@@ -268,10 +340,35 @@ export function AutoSyncManager({
     }
   }, [exportFolder, schedule, exportScheduleToFile]);
 
+  // Download single day as file (browser download)
+  const downloadDay = useCallback((day: DayOfWeek) => {
+    const content = onExportSchedule(day);
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${day}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success(`${day}.txt baixado!`);
+  }, [onExportSchedule]);
+
+  // Download all days as zip-like (individual files)
+  const downloadAllDays = useCallback(() => {
+    const days: DayOfWeek[] = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];
+    
+    days.forEach((day, index) => {
+      if (schedule[day]?.length > 0) {
+        setTimeout(() => downloadDay(day), index * 200);
+      }
+    });
+  }, [schedule, downloadDay]);
+
   // Auto export timer
   useEffect(() => {
     if (autoExport && exportFolder) {
-      // Set next sync time
       setNextSync(new Date(Date.now() + AUTO_SYNC_INTERVAL));
       
       intervalRef.current = setInterval(() => {
@@ -302,12 +399,14 @@ export function AutoSyncManager({
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  const matchedCount = matchResults.filter(r => r.matched).length;
+
   return (
     <Card className="glass-card">
       <CardHeader className="pb-3">
         <CardTitle className="text-lg flex items-center gap-2">
           <RefreshCw className={cn("h-5 w-5 text-primary", isProcessing && "animate-spin")} />
-          Sincronização Automática
+          Sincronização e Download
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -341,20 +440,61 @@ export function AutoSyncManager({
           )}
         </div>
 
-        {/* Export folder selection */}
+        {/* Replace placeholders button */}
+        {capturedSongs.length > 0 && (
+          <div className="p-3 rounded-lg bg-primary/10 border border-primary/30 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Replace className="h-4 w-4 text-primary" />
+                <span className="text-sm font-medium">Músicas Capturadas</span>
+              </div>
+              <Badge variant="secondary">{capturedSongs.filter(s => s.matchedFile).length} no acervo</Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Substitui todos os <code className="bg-muted px-1 rounded">mus</code> da grade pelas músicas capturadas das rádios
+            </p>
+            <Button
+              onClick={replacePlaceholders}
+              className="w-full gap-2"
+              variant="default"
+            >
+              <Zap className="h-4 w-4" />
+              Substituir Placeholders (mus) por Músicas
+            </Button>
+            {replacedCount > 0 && (
+              <p className="text-xs text-broadcast-green text-center">
+                ✓ {replacedCount} placeholders substituídos
+              </p>
+            )}
+          </div>
+        )}
+
+        <Separator />
+
+        {/* Download Section */}
         <div className="space-y-2">
           <Label className="flex items-center gap-2">
-            <FolderOpen className="h-4 w-4" />
-            Pasta de Exportação
+            <Download className="h-4 w-4" />
+            Download da Grade
           </Label>
-          <Button
-            variant="outline"
-            className="w-full gap-2"
-            onClick={handleSelectFolder}
-          >
-            <FolderOpen className="h-4 w-4" />
-            {exportFolder ? `📁 ${exportFolder.name}` : 'Selecionar Pasta'}
-          </Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant="outline"
+              className="gap-2"
+              onClick={downloadAllDays}
+            >
+              <FileText className="h-4 w-4" />
+              Baixar Todos (.txt)
+            </Button>
+            <Button
+              variant="outline"
+              className="gap-2"
+              onClick={handleSelectFolder}
+            >
+              <FolderOpen className="h-4 w-4" />
+              {exportFolder ? `📁 ${exportFolder.name}` : 'Selecionar Pasta'}
+            </Button>
+          </div>
         </div>
 
         {/* Auto export toggle */}
@@ -398,7 +538,7 @@ export function AutoSyncManager({
           disabled={!exportFolder || isProcessing}
         >
           <Save className="h-4 w-4" />
-          Exportar Todas as Grades Agora
+          Salvar Todas as Grades na Pasta
         </Button>
 
         {/* Match results */}
@@ -407,13 +547,13 @@ export function AutoSyncManager({
             <div className="flex items-center justify-between">
               <Label className="flex items-center gap-2">
                 <Music className="h-4 w-4" />
-                Músicas Encontradas
+                Músicas das Rádios
               </Label>
-              <Badge variant="secondary">
-                {matchResults.filter(r => r.matched).length}/{matchResults.length}
+              <Badge variant={matchedCount > 0 ? 'default' : 'secondary'}>
+                {matchedCount}/{matchResults.length} no acervo
               </Badge>
             </div>
-            <ScrollArea className="h-[200px] border rounded-lg p-2">
+            <ScrollArea className="h-[180px] border rounded-lg p-2">
               <div className="space-y-1">
                 {matchResults.slice(0, 50).map((result, idx) => (
                   <div
@@ -429,11 +569,20 @@ export function AutoSyncManager({
                       <AlertCircle className="h-3 w-3 text-destructive shrink-0 mt-0.5" />
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium truncate">{result.title || 'Sem título'}</div>
-                      <div className="text-muted-foreground truncate">{result.artist || 'Artista desconhecido'}</div>
-                      {result.matched && (
+                      <div className="flex items-center gap-1">
+                        <Radio className="h-3 w-3 text-muted-foreground" />
+                        <span className="text-muted-foreground">{result.radioName}</span>
+                      </div>
+                      <div className="font-medium truncate">
+                        {result.artist && `${result.artist} - `}{result.title || 'Sem título'}
+                      </div>
+                      {result.matched ? (
                         <div className="text-broadcast-green truncate">
-                          → {result.matched}
+                          → "{result.matched}"
+                        </div>
+                      ) : (
+                        <div className="text-destructive">
+                          → Será <span className="font-mono">mus</span> (placeholder)
                         </div>
                       )}
                     </div>

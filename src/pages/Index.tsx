@@ -26,6 +26,7 @@ export default function Index() {
     musicFolders,
     importScheduleFile,
     updateSlot,
+    updateDaySchedule,
     addRadioStation,
     removeRadioStation,
     saveLibrary,
@@ -183,6 +184,7 @@ export default function Index() {
                 musicLibrary={musicLibrary}
                 onUpdateStations={saveStations}
                 onExportSchedule={exportSchedule}
+                onUpdateSchedule={updateDaySchedule}
               />
             </div>
           </TabsContent>
