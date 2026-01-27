@@ -57,6 +57,16 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        broadcast: {
+          red: "hsl(var(--broadcast-red))",
+          green: "hsl(var(--broadcast-green))",
+          blue: "hsl(var(--broadcast-blue))",
+          yellow: "hsl(var(--broadcast-yellow))",
+          purple: "hsl(var(--broadcast-purple))",
+        },
+      },
+      fontFamily: {
+        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
       },
       borderRadius: {
         lg: "var(--radius)",
