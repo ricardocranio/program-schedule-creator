@@ -4,8 +4,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Progress } from '@/components/ui/progress';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
 import { 
   RefreshCw, 
   Download, 
@@ -16,11 +19,12 @@ import {
   Radio,
   Save,
   Zap,
-  Activity
+  Activity,
+  Clock
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { findBestMatch, normalizeForMatch, MatchResult } from '@/lib/fuzzyMatch';
+import { findBestMatch, normalizeForMatch } from '@/lib/fuzzyMatch';
 
 interface AutoSyncManagerProps {
   schedule: ScheduleData;
@@ -40,7 +44,8 @@ interface CapturedSong {
 }
 
 const CHECK_INTERVAL = 30_000; // 30s
-const EXPORT_INTERVAL = 20 * 60_000; // 20min
+const AUTO_SAVE_KEY = 'radiograde_auto_save_enabled';
+const AUTO_SAVE_INTERVAL_KEY = 'radiograde_auto_save_interval';
 
 export function AutoSyncManager({
   schedule,
@@ -51,7 +56,17 @@ export function AutoSyncManager({
   onUpdateSchedule,
 }: AutoSyncManagerProps) {
   const [autoReplace, setAutoReplace] = useState(true);
-  const [autoExport, setAutoExport] = useState(false);
+  
+  // Auto-save sempre ativo por padrão
+  const [autoExport, setAutoExport] = useState(() => {
+    const saved = localStorage.getItem(AUTO_SAVE_KEY);
+    return saved === null ? true : saved === 'true';
+  });
+  
+  const [autoExportInterval, setAutoExportInterval] = useState(() => {
+    return parseInt(localStorage.getItem(AUTO_SAVE_INTERVAL_KEY) || '20');
+  });
+  
   const [isProcessing, setIsProcessing] = useState(false);
   const [capturedSongs, setCapturedSongs] = useState<CapturedSong[]>([]);
   const [historyFolder, setHistoryFolder] = useState<FileSystemDirectoryHandle | null>(null);
@@ -60,9 +75,21 @@ export function AutoSyncManager({
   const [replacedCount, setReplacedCount] = useState(0);
   const [lastHash, setLastHash] = useState('');
   const [lastSync, setLastSync] = useState<Date | null>(null);
+  const [lastExport, setLastExport] = useState<Date | null>(null);
+  const [nextExportIn, setNextExportIn] = useState<number | null>(null);
   
   const monitorRef = useRef<NodeJS.Timeout | null>(null);
   const exportRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Salvar configurações
+  useEffect(() => {
+    localStorage.setItem(AUTO_SAVE_KEY, autoExport.toString());
+  }, [autoExport]);
+  
+  useEffect(() => {
+    localStorage.setItem(AUTO_SAVE_INTERVAL_KEY, autoExportInterval.toString());
+  }, [autoExportInterval]);
 
   // Parse song text from various formats
   const parseSong = (text: string): { artist: string; title: string } => {
@@ -108,7 +135,7 @@ export function AutoSyncManager({
           ...updatedStations[idx],
           historico: radioData.historico_completo || [],
           tocandoAgora: radioData.ultimo_dado?.tocando_agora || '',
-          ultimasTocadas: radioData.ultimo_dado?.ultimas_tocadas || [],
+          ultimasTocadas: (radioData.ultimo_dado?.ultimas_tocadas || []).slice(0, 5),
         };
 
         // Collect all songs
@@ -148,7 +175,21 @@ export function AutoSyncManager({
     if (!historyFolder) return;
     
     try {
-      const handle = await historyFolder.getFileHandle('radio_historico.json');
+      // Try radio_historico.json first
+      let handle: FileSystemFileHandle | null = null;
+      
+      try {
+        handle = await historyFolder.getFileHandle('radio_historico.json');
+      } catch {
+        try {
+          handle = await historyFolder.getFileHandle('radio_relatorio.txt');
+        } catch {
+          // Neither file found
+        }
+      }
+      
+      if (!handle) return;
+      
       const file = await handle.getFile();
       const content = await file.text();
       const hash = btoa(content.slice(0, 200) + content.length);
@@ -157,8 +198,12 @@ export function AutoSyncManager({
         setLastHash(hash);
         setIsProcessing(true);
         
-        const data = JSON.parse(content);
-        const captured = await processHistory(data);
+        let captured: CapturedSong[] | null = null;
+        
+        if (handle.name.endsWith('.json')) {
+          const data = JSON.parse(content);
+          captured = await processHistory(data);
+        }
         
         if (captured) {
           setCapturedSongs(captured);
@@ -241,7 +286,10 @@ export function AutoSyncManager({
       }
     }
 
-    if (count > 0) toast.success(`${count} arquivos salvos!`);
+    if (count > 0) {
+      setLastExport(new Date());
+      toast.success(`${count} grade(s) exportada(s)!`);
+    }
   }, [exportFolder, schedule, onExportSchedule]);
 
   // Download all days
@@ -280,6 +328,11 @@ export function AutoSyncManager({
       const dir = await window.showDirectoryPicker({ mode: 'readwrite' });
       setExportFolder(dir);
       toast.success(`Exportando para: ${dir.name}`);
+      
+      // Exportar imediatamente se auto-export estiver ativo
+      if (autoExport) {
+        setTimeout(exportAll, 500);
+      }
     } catch (e) {
       if ((e as Error).name !== 'AbortError') toast.error('Erro ao selecionar pasta');
     }
@@ -294,13 +347,31 @@ export function AutoSyncManager({
     }
   }, [historyFolder, checkHistory]);
 
-  // Auto export
+  // Auto export with countdown
   useEffect(() => {
     if (autoExport && exportFolder) {
-      exportRef.current = setInterval(exportAll, EXPORT_INTERVAL);
-      return () => { if (exportRef.current) clearInterval(exportRef.current); };
+      // Export immediately on enable
+      exportAll();
+      setNextExportIn(autoExportInterval);
+      
+      // Countdown
+      countdownRef.current = setInterval(() => {
+        setNextExportIn(prev => {
+          if (prev === null || prev <= 1) {
+            exportAll();
+            return autoExportInterval;
+          }
+          return prev - 1;
+        });
+      }, 60000); // Update every minute
+      
+      return () => { 
+        if (countdownRef.current) clearInterval(countdownRef.current); 
+      };
+    } else {
+      setNextExportIn(null);
     }
-  }, [autoExport, exportFolder, exportAll]);
+  }, [autoExport, exportFolder, autoExportInterval, exportAll]);
 
   const matchedCount = capturedSongs.filter(c => c.matchedFile).length;
 
@@ -310,7 +381,7 @@ export function AutoSyncManager({
         <CardTitle className="text-base flex items-center gap-2">
           <Activity className={cn("h-4 w-4 text-primary", historyFolder && "animate-pulse")} />
           Sincronização
-          {historyFolder && (
+          {(historyFolder || autoExport) && (
             <Badge variant="default" className="ml-auto text-xs">
               <span className="animate-pulse mr-1">●</span> Ativo
             </Badge>
@@ -321,7 +392,7 @@ export function AutoSyncManager({
         {/* Folder Selection */}
         <div className="grid grid-cols-2 gap-2">
           <Button
-            variant={historyFolder ? "secondary" : "default"}
+            variant={historyFolder ? "secondary" : "outline"}
             size="sm"
             className="gap-1 text-xs"
             onClick={selectHistoryFolder}
@@ -330,7 +401,7 @@ export function AutoSyncManager({
             {historyFolder ? historyFolder.name : "Histórico"}
           </Button>
           <Button
-            variant="outline"
+            variant={exportFolder ? "secondary" : "outline"}
             size="sm"
             className="gap-1 text-xs"
             onClick={selectExportFolder}
@@ -343,42 +414,88 @@ export function AutoSyncManager({
         {isProcessing && <Progress value={progress} className="h-1" />}
 
         {/* Options */}
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">Auto-substituir</span>
-          <Switch checked={autoReplace} onCheckedChange={setAutoReplace} />
-        </div>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">Auto-exportar (20min)</span>
-          <Switch checked={autoExport} onCheckedChange={setAutoExport} disabled={!exportFolder} />
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Auto-substituir</span>
+            <Switch checked={autoReplace} onCheckedChange={setAutoReplace} />
+          </div>
+          
+          <Separator />
+          
+          <div className="flex items-center justify-between text-sm">
+            <Label className="text-muted-foreground flex items-center gap-1">
+              <RefreshCw className="h-3 w-3" />
+              Auto-exportar grade
+            </Label>
+            <Switch 
+              checked={autoExport} 
+              onCheckedChange={setAutoExport} 
+            />
+          </div>
+          
+          {autoExport && (
+            <div className="flex items-center gap-2 pl-4">
+              <Label className="text-xs text-muted-foreground">Intervalo:</Label>
+              <Select 
+                value={autoExportInterval.toString()} 
+                onValueChange={(v) => setAutoExportInterval(parseInt(v))}
+              >
+                <SelectTrigger className="w-20 h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-popover border-border z-50">
+                  {[5, 10, 15, 20, 30, 60].map(n => (
+                    <SelectItem key={n} value={n.toString()}>{n} min</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {nextExportIn !== null && exportFolder && (
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {nextExportIn}m
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Actions */}
-        {capturedSongs.length > 0 && (
-          <div className="flex gap-2">
-            {!autoReplace && (
-              <Button size="sm" className="flex-1 gap-1" onClick={() => replacePlaceholders()}>
-                <Zap className="h-3 w-3" /> Substituir ({matchedCount})
-              </Button>
-            )}
-            <Button size="sm" variant="outline" className="flex-1 gap-1" onClick={downloadAll}>
-              <Download className="h-3 w-3" /> Baixar .txt
+        <div className="flex gap-2">
+          {capturedSongs.length > 0 && !autoReplace && (
+            <Button size="sm" className="flex-1 gap-1" onClick={() => replacePlaceholders()}>
+              <Zap className="h-3 w-3" /> Substituir ({matchedCount})
             </Button>
-          </div>
-        )}
+          )}
+          <Button size="sm" variant="outline" className="flex-1 gap-1" onClick={downloadAll}>
+            <Download className="h-3 w-3" /> Baixar .txt
+          </Button>
+          {exportFolder && (
+            <Button size="sm" variant="outline" className="gap-1" onClick={exportAll}>
+              <Save className="h-3 w-3" />
+            </Button>
+          )}
+        </div>
 
         {/* Status */}
-        {lastSync && (
-          <div className="text-xs text-muted-foreground text-center">
-            Sync: {lastSync.toLocaleTimeString('pt-BR')} • {matchedCount}/{capturedSongs.length} músicas
-            {replacedCount > 0 && <span className="text-broadcast-green"> • {replacedCount} substituídos</span>}
-          </div>
-        )}
+        <div className="text-xs text-muted-foreground text-center space-y-1">
+          {lastSync && (
+            <div>
+              Sync: {lastSync.toLocaleTimeString('pt-BR')} • {matchedCount}/{capturedSongs.length} músicas
+              {replacedCount > 0 && <span className="text-broadcast-green"> • {replacedCount} substituídos</span>}
+            </div>
+          )}
+          {lastExport && (
+            <div className="text-broadcast-green">
+              Última exportação: {lastExport.toLocaleTimeString('pt-BR')}
+            </div>
+          )}
+        </div>
 
         {/* Results */}
         {capturedSongs.length > 0 && (
-          <ScrollArea className="h-[120px] border rounded p-1">
+          <ScrollArea className="h-[100px] border rounded p-1">
             <div className="space-y-0.5">
-              {capturedSongs.slice(0, 30).map((song, i) => (
+              {capturedSongs.slice(0, 20).map((song, i) => (
                 <div key={i} className={cn(
                   "flex items-center gap-1.5 p-1 rounded text-xs",
                   song.matchedFile ? "bg-broadcast-green/10" : "bg-destructive/10"
