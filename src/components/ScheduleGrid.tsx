@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 interface ScheduleGridProps {
   slots: TimeSlot[];
   day: DayOfWeek;
+  musicLibrary?: string[];
   onEditSlot: (slot: TimeSlot) => void;
   onAddContent: (slot: TimeSlot) => void;
   onGenerateEmpty: () => void;
@@ -15,6 +16,7 @@ interface ScheduleGridProps {
 export function ScheduleGrid({ 
   slots, 
   day, 
+  musicLibrary = [],
   onEditSlot, 
   onAddContent,
   onGenerateEmpty 
@@ -87,6 +89,7 @@ export function ScheduleGrid({
                   <TimeSlotCard
                     key={slot.time}
                     slot={slot}
+                    musicLibrary={musicLibrary}
                     onEdit={onEditSlot}
                     onAddContent={onAddContent}
                   />

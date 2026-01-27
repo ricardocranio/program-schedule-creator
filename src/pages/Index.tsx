@@ -4,13 +4,16 @@ import { useSchedule } from '@/hooks/useSchedule';
 import { Header } from '@/components/Header';
 import { DayTabs } from '@/components/DayTabs';
 import { ScheduleGrid } from '@/components/ScheduleGrid';
+import { TimelineView } from '@/components/TimelineView';
 import { SequenceBuilder } from '@/components/SequenceBuilder';
 import { RadioStationManager } from '@/components/RadioStationManager';
 import { MusicLibraryManager } from '@/components/MusicLibraryManager';
 import { SlotEditorDialog } from '@/components/SlotEditorDialog';
 import { ImportExportDialog } from '@/components/ImportExportDialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Calendar, Layers, Radio as RadioIcon, Settings, Database } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Calendar, Layers, Radio as RadioIcon, Settings, Database, LayoutGrid, Clock } from 'lucide-react';
+import { toast } from 'sonner';
 
 export default function Index() {
   const {
@@ -34,6 +37,7 @@ export default function Index() {
   const [editingSlot, setEditingSlot] = useState<TimeSlot | null>(null);
   const [showImportExport, setShowImportExport] = useState<'import' | 'export' | null>(null);
   const [activeTab, setActiveTab] = useState('grade');
+  const [viewMode, setViewMode] = useState<'grid' | 'timeline'>('grid');
 
   const currentSlots = schedule[selectedDay] || [];
 
@@ -50,13 +54,43 @@ export default function Index() {
     setEditingSlot(null);
   };
 
-  const handleSequenceComplete = (sequence: SequenceItem[]) => {
-    // Aplica a sequência em todos os placeholders do dia
-    console.log('Sequência aplicada:', sequence);
+  const handleSequenceComplete = (sequence: SequenceItem[], config?: any) => {
+    if (!config) {
+      toast.info('Sequência gerada - aplique nos horários desejados');
+      return;
+    }
+
+    // Apply sequence to slots in the selected time range and days
+    const { startTime, endTime, days } = config;
+    let appliedCount = 0;
+
+    days.forEach((day: DayOfWeek) => {
+      const daySlots = schedule[day] || [];
+      
+      daySlots.forEach(slot => {
+        const slotTime = slot.time;
+        if (slotTime >= startTime && slotTime <= endTime) {
+          // Apply sequence pattern to this slot
+          const newContent = sequence.map((item, idx) => ({
+            type: item.type === 'vht' ? 'vht' as const : 'placeholder' as const,
+            value: item.type === 'vht' ? 'vht' : 'mus',
+            radioSource: item.radioId,
+          }));
+          
+          updateSlot(day, slot.time, { ...slot, content: newContent });
+          appliedCount++;
+        }
+      });
+    });
+
+    if (appliedCount > 0) {
+      toast.success(`Sequência aplicada em ${appliedCount} slots!`);
+    } else {
+      toast.warning('Nenhum slot encontrado no horário selecionado');
+    }
   };
 
   const handleUpdateStation = (station: RadioStation) => {
-    // Remove e adiciona novamente para atualizar
     removeRadioStation(station.id);
     addRadioStation(station);
   };
@@ -75,6 +109,10 @@ export default function Index() {
             <TabsTrigger value="grade" className="gap-2">
               <Calendar className="h-4 w-4" />
               Grade
+            </TabsTrigger>
+            <TabsTrigger value="timeline" className="gap-2">
+              <Clock className="h-4 w-4" />
+              Timeline
             </TabsTrigger>
             <TabsTrigger value="montagem" className="gap-2">
               <Layers className="h-4 w-4" />
@@ -97,9 +135,27 @@ export default function Index() {
               <ScheduleGrid
                 slots={currentSlots}
                 day={selectedDay}
+                musicLibrary={musicLibrary}
                 onEditSlot={handleEditSlot}
                 onAddContent={handleEditSlot}
                 onGenerateEmpty={() => generateEmptySchedule(selectedDay)}
+              />
+            </div>
+          </TabsContent>
+
+          {/* Tab Timeline */}
+          <TabsContent value="timeline" className="mt-0">
+            <div className="space-y-4">
+              <DayTabs
+                selectedDay={selectedDay}
+                onSelectDay={setSelectedDay}
+                hasSlotsForDay={hasSlotsForDay}
+              />
+              <TimelineView
+                slots={currentSlots}
+                day={selectedDay}
+                musicLibrary={musicLibrary}
+                onSlotClick={handleEditSlot}
               />
             </div>
           </TabsContent>
@@ -174,6 +230,9 @@ export default function Index() {
             <span className="flex items-center gap-1">
               <RadioIcon className="h-3 w-3" />
               {radioStations.length} emissoras
+            </span>
+            <span className="flex items-center gap-1">
+              🎵 {musicLibrary.length} músicas no acervo
             </span>
           </div>
           <span>
