@@ -170,7 +170,9 @@ export default function Index() {
             <div className="grid lg:grid-cols-2 xl:grid-cols-4 gap-4">
               <SequenceBuilder
                 radioStations={radioStations.filter(s => s.enabled)}
+                musicLibrary={musicLibrary}
                 onSequenceComplete={handleSequenceComplete}
+                onAutoAssemble={updateDaySchedule}
               />
               <AutoSyncManager
                 schedule={schedule}
