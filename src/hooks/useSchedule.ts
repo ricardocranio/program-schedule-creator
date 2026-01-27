@@ -7,16 +7,72 @@ const STATIONS_KEY = 'radio_stations';
 const LIBRARY_KEY = 'music_library';
 const FOLDERS_KEY = 'music_folders';
 
-// Default radio stations from radio_monitor_supabase.py
+// Default radio stations from radio_monitor_supabase.py with demo data
 const DEFAULT_STATIONS: RadioStation[] = [
-  { id: 'bh_fm', name: 'BH FM', url: 'https://mytuner-radio.com/pt/radio/radio-bh-fm-402270', enabled: true },
-  { id: 'band_fm', name: 'Band FM', url: 'https://mytuner-radio.com/pt/radio/band-fm-413397/', enabled: true },
-  { id: 'clube_fm', name: 'Clube FM', url: 'https://mytuner-radio.com/pt/radio/radio-clube-fm-brasilia-1055-406812/', enabled: true },
-  { id: 'globo_fm', name: 'Globo Fm', url: 'https://mytuner-radio.com/pt/radio/radio-globo-rj-402262/', enabled: true },
-  { id: 'blink_102', name: 'Blink 102 FM', url: 'https://mytuner-radio.com/pt/radio/radio-blink-102-fm-407711/', enabled: true },
-  { id: 'positiva_fm', name: 'Positiva FM', url: 'https://mytuner-radio.com/pt/radio/positiva-fm-421607/', enabled: true },
-  { id: 'liberdade_fm', name: 'Liberdade FM', url: 'https://mytuner-radio.com/pt/radio/radio-liberdade-fm-929-395273/', enabled: true },
-  { id: 'mix_fm', name: 'Mix FM', url: 'https://mytuner-radio.com/pt/radio/mix-fm-sao-paulo-408793/', enabled: true },
+  { 
+    id: 'bh_fm', 
+    name: 'BH FM', 
+    url: 'https://mytuner-radio.com/pt/radio/radio-bh-fm-402270', 
+    enabled: true,
+    tocandoAgora: 'Bruno Mars - Locked Out of Heaven',
+    ultimasTocadas: ['Maroon 5 - Sugar', 'Ed Sheeran - Shape of You', 'The Weeknd - Blinding Lights', 'Dua Lipa - Levitating', 'Harry Styles - As It Was']
+  },
+  { 
+    id: 'band_fm', 
+    name: 'Band FM', 
+    url: 'https://mytuner-radio.com/pt/radio/band-fm-413397/', 
+    enabled: true,
+    tocandoAgora: 'Anitta - Envolver',
+    ultimasTocadas: ['Luísa Sonza - Sentadona', 'Simone e Simaria - Regime Fechado', 'Jorge e Mateus - Paredes', 'Henrique e Juliano - Aquela Pessoa']
+  },
+  { 
+    id: 'clube_fm', 
+    name: 'Clube FM', 
+    url: 'https://mytuner-radio.com/pt/radio/radio-clube-fm-brasilia-1055-406812/', 
+    enabled: true,
+    tocandoAgora: 'Gusttavo Lima - Balada',
+    ultimasTocadas: ['Wesley Safadão - Camarote', 'Marília Mendonça - Infiel', 'Maiara e Maraisa - Medo Bobo', 'Zé Neto e Cristiano - Largado às Traças']
+  },
+  { 
+    id: 'globo_fm', 
+    name: 'Globo FM', 
+    url: 'https://mytuner-radio.com/pt/radio/radio-globo-rj-402262/', 
+    enabled: true,
+    tocandoAgora: 'Coldplay - Yellow',
+    ultimasTocadas: ['U2 - With or Without You', 'Red Hot Chili Peppers - Californication', 'Foo Fighters - Everlong', 'Nirvana - Smells Like Teen Spirit']
+  },
+  { 
+    id: 'blink_102', 
+    name: 'Blink 102 FM', 
+    url: 'https://mytuner-radio.com/pt/radio/radio-blink-102-fm-407711/', 
+    enabled: true,
+    tocandoAgora: 'Imagine Dragons - Believer',
+    ultimasTocadas: ['OneRepublic - Counting Stars', 'The Script - Hall of Fame', 'Bastille - Pompeii']
+  },
+  { 
+    id: 'positiva_fm', 
+    name: 'Positiva FM', 
+    url: 'https://mytuner-radio.com/pt/radio/positiva-fm-421607/', 
+    enabled: true,
+    tocandoAgora: 'Alok - Hear Me Now',
+    ultimasTocadas: ['Vintage Culture - In The Dark', 'KVSH - Tokyo Drift', 'Cat Dealers - Your Body']
+  },
+  { 
+    id: 'liberdade_fm', 
+    name: 'Liberdade FM', 
+    url: 'https://mytuner-radio.com/pt/radio/radio-liberdade-fm-929-395273/', 
+    enabled: true,
+    tocandoAgora: 'Leonardo - Pense em Mim',
+    ultimasTocadas: ['Chitãozinho e Xororó - Evidências', 'Zezé Di Camargo - É o Amor', 'Bruno e Marrone - Dormi na Praça']
+  },
+  { 
+    id: 'mix_fm', 
+    name: 'Mix FM', 
+    url: 'https://mytuner-radio.com/pt/radio/mix-fm-sao-paulo-408793/', 
+    enabled: true,
+    tocandoAgora: 'Doja Cat - Kiss Me More',
+    ultimasTocadas: ['Olivia Rodrigo - good 4 u', 'Billie Eilish - Bad Guy', 'Ariana Grande - 7 rings', 'Post Malone - Circles']
+  },
 ];
 
 export function useSchedule() {
@@ -29,8 +85,13 @@ export function useSchedule() {
     const saved = localStorage.getItem(STATIONS_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      return parsed.length > 0 ? parsed : DEFAULT_STATIONS;
+      // Check if stations have tocandoAgora - if not, use defaults with demo data
+      if (parsed.length > 0 && parsed.some((s: RadioStation) => s.tocandoAgora)) {
+        return parsed;
+      }
     }
+    // Use default stations with demo data
+    localStorage.setItem(STATIONS_KEY, JSON.stringify(DEFAULT_STATIONS));
     return DEFAULT_STATIONS;
   });
 
