@@ -61,6 +61,8 @@ interface CapturedTrack {
   downloadStatus?: 'pending' | 'searching' | 'found' | 'not_found' | 'queued';
 }
 
+const DOWNLOAD_CONFIG_KEY = 'radiograde_capture_download_config';
+
 interface RealTimeCaptureProps {
   radioStations: RadioStation[];
   musicLibrary: string[];
@@ -80,9 +82,21 @@ export function RealTimeCapture({
   const [isCapturing, setIsCapturing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [historyFolder, setHistoryFolder] = useState<FileSystemDirectoryHandle | null>(null);
-  const [dataSource, setDataSource] = useState<'local' | 'database'>('database'); // Default to database
+  const [dataSource, setDataSource] = useState<'local' | 'database'>('database');
   const [lastCapture, setLastCapture] = useState<Date | null>(null);
   const [nextCaptureIn, setNextCaptureIn] = useState(30);
+  const [autoDownload, setAutoDownload] = useState(() => {
+    try {
+      const saved = localStorage.getItem(DOWNLOAD_CONFIG_KEY);
+      return saved ? JSON.parse(saved).autoDownload ?? false : false;
+    } catch { return false; }
+  });
+  const [downloadFolderName, setDownloadFolderName] = useState(() => {
+    try {
+      const saved = localStorage.getItem(DOWNLOAD_CONFIG_KEY);
+      return saved ? JSON.parse(saved).folderName ?? '' : '';
+    } catch { return ''; }
+  });
   const [stats, setStats] = useState({
     total: 0,
     matched: 0,
@@ -94,6 +108,16 @@ export function RealTimeCapture({
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
   const lastHashRef = useRef<string>('');
   const notifiedTracksRef = useRef<Set<string>>(new Set());
+  const downloadFolderRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const autoSearchedRef = useRef<Set<string>>(new Set());
+
+  // Persist download config
+  useEffect(() => {
+    localStorage.setItem(DOWNLOAD_CONFIG_KEY, JSON.stringify({
+      autoDownload,
+      folderName: downloadFolderName,
+    }));
+  }, [autoDownload, downloadFolderName]);
 
   // Match song against library
   const findMatch = useCallback((artist: string, title: string) => {
@@ -280,6 +304,46 @@ export function RealTimeCapture({
       setIsCapturing(false);
     }
   }, [dataSource, historyFolder, isPaused, captureFromLocal, captureFromDatabase]);
+
+  // Select download folder for batch files
+  const selectDownloadFolder = async () => {
+    try {
+      // @ts-ignore - File System Access API
+      const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      downloadFolderRef.current = dirHandle;
+      setDownloadFolderName(dirHandle.name);
+      toast.success(`Pasta de download: ${dirHandle.name}`);
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') {
+        toast.error('Erro ao selecionar pasta de download');
+      }
+    }
+  };
+
+  // Save batch file to folder or browser download
+  const saveBatchToFolder = async (tracks: DeezerTrack[], label: string) => {
+    if (tracks.length === 0) return;
+
+    const batchContent = tracks.map(t => `https://www.deezer.com/track/${t.id}`).join('\n');
+    const fullContent = `# RadioGrade Auto-Download Batch\n# Total: ${tracks.length} músicas\n# ${new Date().toLocaleString('pt-BR')}\n\n${batchContent}`;
+    const fileName = `deemix_batch_${label}_${Date.now()}.txt`;
+
+    if (downloadFolderRef.current) {
+      try {
+        const fileHandle = await downloadFolderRef.current.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(fullContent);
+        await writable.close();
+        toast.success(`Batch salvo: ${fileName}`, { description: `${tracks.length} músicas na pasta ${downloadFolderName}` });
+        return;
+      } catch (error) {
+        console.error('Erro ao salvar na pasta:', error);
+        toast.error('Pasta inacessível, baixando pelo navegador...');
+      }
+    }
+    // Fallback: browser download
+    downloadDeemixBatch(tracks, fileName);
+  };
 
   // Select folder
   const selectFolder = async () => {
@@ -503,12 +567,8 @@ export function RealTimeCapture({
     toast.dismiss('batch-search');
 
     if (foundTracks.length > 0) {
-      // Generate and download batch file
-      downloadDeemixBatch(foundTracks, `radio_batch_${new Date().toISOString().split('T')[0]}.txt`);
-      
-      toast.success(`Batch gerado com ${foundTracks.length} músicas!`, {
-        description: notFoundCount > 0 ? `${notFoundCount} não encontradas` : undefined
-      });
+      // Save batch file to folder or download
+      await saveBatchToFolder(foundTracks, new Date().toISOString().split('T')[0]);
 
       // Update database
       for (const track of foundTracks) {
@@ -521,6 +581,63 @@ export function RealTimeCapture({
       toast.error('Nenhuma música encontrada no Deezer');
     }
   };
+
+  // Auto-search missing tracks after each capture
+  useEffect(() => {
+    if (!autoDownload || capturedTracks.length === 0) return;
+
+    const missingUnsearched = capturedTracks.filter(t => 
+      !t.matchedFile && 
+      !t.downloadStatus &&
+      !t.isSearching &&
+      !autoSearchedRef.current.has(`${t.artist}|${t.title}`.toLowerCase())
+    );
+
+    if (missingUnsearched.length === 0) return;
+
+    const autoSearch = async () => {
+      const foundTracks: DeezerTrack[] = [];
+
+      for (const track of missingUnsearched) {
+        const key = `${track.artist}|${track.title}`.toLowerCase();
+        autoSearchedRef.current.add(key);
+
+        try {
+          setCapturedTracks(prev => prev.map(t => 
+            t.id === track.id ? { ...t, isSearching: true, downloadStatus: 'searching' } : t
+          ));
+
+          const results = await searchByArtistTitle(track.artist, track.title);
+
+          if (results.length > 0) {
+            foundTracks.push(results[0]);
+            setCapturedTracks(prev => prev.map(t => 
+              t.id === track.id 
+                ? { ...t, deezerResults: results, isSearching: false, downloadStatus: 'queued' } 
+                : t
+            ));
+          } else {
+            setCapturedTracks(prev => prev.map(t => 
+              t.id === track.id 
+                ? { ...t, isSearching: false, downloadStatus: 'not_found' } 
+                : t
+            ));
+          }
+          await new Promise(r => setTimeout(r, 200));
+        } catch (error) {
+          console.error(`Auto-busca erro: ${track.artist} - ${track.title}`, error);
+        }
+      }
+
+      if (foundTracks.length > 0) {
+        await saveBatchToFolder(foundTracks, `auto_${Date.now()}`);
+        toast.success(`Auto-download: ${foundTracks.length} músicas no batch!`);
+      }
+    };
+
+    const timer = setTimeout(autoSearch, 1500);
+    return () => clearTimeout(timer);
+  }, [autoDownload, capturedTracks.length, stats.missing]);
 
   return (
     <Card className="glass-card xl:col-span-2">
@@ -604,6 +721,35 @@ export function RealTimeCapture({
             <div className="text-lg font-bold text-primary">{matchRate}%</div>
             <div className="text-[10px] text-muted-foreground">Taxa</div>
           </div>
+        </div>
+
+        {/* Auto-download controls */}
+        <div className="flex items-center gap-2 p-2 rounded-lg bg-secondary/30 border">
+          <div className="flex items-center gap-2 flex-1">
+            <Switch
+              id="auto-download"
+              checked={autoDownload}
+              onCheckedChange={setAutoDownload}
+            />
+            <Label htmlFor="auto-download" className="text-xs cursor-pointer">
+              Auto-Download
+            </Label>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[10px] gap-1"
+            onClick={selectDownloadFolder}
+          >
+            <FolderOpen className="h-3 w-3" />
+            {downloadFolderName || 'Pasta destino'}
+          </Button>
+          {autoDownload && (
+            <Badge variant="outline" className="text-[8px] bg-primary/20">
+              <Zap className="h-2.5 w-2.5 mr-0.5" />
+              AUTO
+            </Badge>
+          )}
         </div>
 
         {/* Progress bar */}
